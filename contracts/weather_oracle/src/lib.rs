@@ -14,6 +14,7 @@ pub enum DataKey {
     ContractOwner,
     EpochData(u32),
     Relayer,
+    EpochDuration,
     ContinuityRequirement,
     Threshold,
     Continuity,
@@ -32,8 +33,8 @@ fn get_relayer(e: &Env) -> Address {
         .expect("Contract not initialized")
 }
 
-fn get_epoch_data(e: &Env, day: u32) -> EpochData {
-    e.storage().instance().get::<_, EpochData>(&DataKey::EpochData(day))
+fn get_epoch_data(e: &Env, epoch: u32) -> EpochData {
+    e.storage().instance().get::<_, EpochData>(&DataKey::EpochData(epoch))
         .expect("Epoch data not found")
 }
 
@@ -60,10 +61,24 @@ fn set_threshold(e: &Env, threshold: u32) {
     e.storage().instance().set(&DataKey::Threshold, &threshold);
 }
 
-fn get_current_day(e: &Env) -> u32 {
+fn get_epoch_duration(e: &Env) -> u32 {
+    e.storage().instance().get::<_, u32>(&DataKey::EpochDuration)
+        .expect("Contract not initialized")
+}
+
+fn get_current_epoch(e: &Env) -> u32 {
     let current_timestamp = e.ledger().timestamp();
-    let current_unix_day = current_timestamp / 86400;
-    current_unix_day.try_into().unwrap()
+    let current_epoch = current_timestamp / u64::from(get_epoch_duration(e));
+    current_epoch.try_into().unwrap()
+}
+
+fn get_continuity(e: &Env) -> u32 {
+    e.storage().instance().get::<_, u32>(&DataKey::Continuity)
+        .expect("Contract not initialized")
+}
+
+fn set_continuity(e: &Env, continuity: u32) {
+    e.storage().instance().set(&DataKey::Continuity, &continuity);
 }
 
 #[contract]
@@ -75,9 +90,9 @@ impl WeatherOracle {
         e: Env,
         caller: Address,
         relayer: Address,
+        epoch_duration: u32,
         continuity_requirement: u32,
         threshold: u32,
-        initial_value: u32,
         token: Address,
         recipient: Address
     ) {
@@ -86,25 +101,30 @@ impl WeatherOracle {
             "Contract already initialized"
         );
 
+        let initial_continuity: u32 = 0;
+
         e.storage().instance().set(&DataKey::ContractOwner, &caller);
         e.storage().instance().set(&DataKey::Initialized, &true);
         e.storage().instance().set(&DataKey::Relayer, &relayer);
+        e.storage().instance().set(&DataKey::EpochDuration, &epoch_duration);
         e.storage().instance().set(&DataKey::ContinuityRequirement, &continuity_requirement);
         e.storage().instance().set(&DataKey::Threshold, &threshold);
         e.storage().instance().set(&DataKey::Token, &token);
         e.storage().instance().set(&DataKey::Recipient, &recipient);
+        e.storage().instance().set(&DataKey::Continuity, &initial_continuity);
 
-        let current_day = get_current_day(&e);
+        let current_epoch = get_current_epoch(&e);
+        let initial_value: u32 = 0;
         let epoch_data = EpochData { value: initial_value };
-        e.storage().instance().set(&DataKey::EpochData(current_day), &epoch_data);
-        e.storage().instance().set(&DataKey::LatestUpdate, &current_day);
+        e.storage().instance().set(&DataKey::EpochData(current_epoch), &epoch_data);
+        e.storage().instance().set(&DataKey::LatestUpdate, &current_epoch);
     }
 
     pub fn set_value(
         e: Env,
         caller: Address,
         value: u32,
-        day: u32,
+        epoch: u32,
     ) {
         caller.require_auth();
         assert_eq!(
@@ -113,38 +133,32 @@ impl WeatherOracle {
             "Caller is not the relayer"
         );
 
-        let last_update_time: u64 = e.storage().instance().get::<_, u64>(&DataKey::LatestUpdate)
-            .expect("Contract not initialized");
-
-        let current_day = get_current_day(&e);
+        let current_epoch = get_current_epoch(&e);
 
         assert!(
-            day < current_day,
-            "Value can only be updated for previous days"
+            epoch < current_epoch,
+            "Value can only be updated for previous epochs"
         );
 
         let latest_update: u32 = e.storage().instance().get::<_, u32>(&DataKey::LatestUpdate)
             .expect("Contract not initialized");
 
         assert!(
-            day == latest_update + 1,
-            "Day must be sequential"
+            epoch == latest_update + 1,
+            "Epoch must be sequential"
         );
 
         let epoch_data = EpochData { value };
-        let current_day: u32 = ((e.ledger().timestamp() - last_update_time) / 86400) as u32;
 
-        e.storage().instance().set(&DataKey::EpochData(current_day), &epoch_data);
-        e.storage().instance().set(&DataKey::LatestUpdate, &e.ledger().timestamp());
+        e.storage().instance().set(&DataKey::EpochData(epoch), &epoch_data);
+        e.storage().instance().set(&DataKey::LatestUpdate, &epoch);
 
         let threshold = get_threshold(&e);
         let continuity_requirement = get_continuity_requirement(&e);
 
         if value > threshold {
-            let continuity: u32 = e.storage().instance().get::<_, u32>(&DataKey::Continuity)
-                .expect("Contract not initialized");
-
-            e.storage().instance().set(&DataKey::Continuity, &(continuity + 1));
+            let continuity: u32 = get_continuity(&e);
+            set_continuity(&e, continuity + 1);
 
             if continuity + 1 >= continuity_requirement {
                 let contract_address = e.current_contract_address();
@@ -162,9 +176,9 @@ impl WeatherOracle {
 
     pub fn get_value(
         e: Env,
-        day: u32,
+        epoch: u32,
     ) -> u32 {
-        let epoch_data = get_epoch_data(&e, day);
+        let epoch_data = get_epoch_data(&e, epoch);
         epoch_data.value
     }
 
@@ -216,8 +230,16 @@ impl WeatherOracle {
         get_last_update_time(&e)
     }
 
-    pub fn get_epoch_data(e: Env, day: u32) -> EpochData {
-        get_epoch_data(&e, day)
+    pub fn get_epoch_data(e: Env, epoch: u32) -> EpochData {
+        get_epoch_data(&e, epoch)
+    }
+
+    pub fn get_current_epoch(e: Env) -> u32 {
+        get_current_epoch(&e)
+    }
+
+    pub fn get_continuity(e: Env) -> u32 {
+        get_continuity(&e)
     }
 }
 

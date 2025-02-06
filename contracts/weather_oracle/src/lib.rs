@@ -1,5 +1,30 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+pub mod contract {
+    pub use soroban_sdk::contract;
+}
+use soroban_sdk::{
+    contract, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
+};
+
+const COALA: Symbol = symbol_short!("COALA");
+
+// Define Events
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub struct WithdrawEvent {
+    pub caller: Address,
+    pub amount: u128,
+    pub recipient: Address,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub struct ValueSetEvent {
+    pub relayer: Address,
+    pub epoch: u32,
+    pub value: u32,
+    pub continuity: u32,
+}
 
 #[derive(Clone, Debug)]
 #[contracttype]
@@ -7,7 +32,7 @@ pub struct EpochData {
     pub value: u32,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[contracttype]
 pub enum DataKey {
     Initialized,
@@ -20,67 +45,115 @@ pub enum DataKey {
     Continuity,
     LatestUpdate,
     Token,
-    Recipient
+    Recipient,
+    // NEW: Store the start_time used to calculate epochs
+    StartTime,
 }
 
+// --------------
+// Helper Methods
+// --------------
 fn get_contract_owner(e: &Env) -> Address {
-    e.storage().instance().get::<_, Address>(&DataKey::ContractOwner)
+    e.storage()
+        .instance()
+        .get::<_, Address>(&DataKey::ContractOwner)
         .expect("Contract not initialized")
 }
 
 fn get_relayer(e: &Env) -> Address {
-    e.storage().instance().get::<_, Address>(&DataKey::Relayer)
+    e.storage()
+        .instance()
+        .get::<_, Address>(&DataKey::Relayer)
         .expect("Contract not initialized")
 }
 
 fn get_epoch_data(e: &Env, epoch: u32) -> EpochData {
-    e.storage().instance().get::<_, EpochData>(&DataKey::EpochData(epoch))
+    e.storage()
+        .instance()
+        .get::<_, EpochData>(&DataKey::EpochData(epoch))
         .expect("Epoch data not found")
 }
 
-fn get_last_update_time(e: &Env) -> u64 {
-    e.storage().instance().get::<_, u64>(&DataKey::LatestUpdate)
+fn get_last_update_time(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::LatestUpdate)
         .expect("Contract not initialized")
 }
 
 fn get_continuity_requirement(e: &Env) -> u32 {
-    e.storage().instance().get::<_, u32>(&DataKey::ContinuityRequirement)
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::ContinuityRequirement)
         .expect("Contract not initialized")
 }
 
 fn get_threshold(e: &Env) -> u32 {
-    e.storage().instance().get::<_, u32>(&DataKey::Threshold)
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::Threshold)
         .expect("Contract not initialized")
 }
 
 fn set_continuity_requirement(e: &Env, continuity_requirement: u32) {
-    e.storage().instance().set(&DataKey::ContinuityRequirement, &continuity_requirement);
+    e.storage()
+        .instance()
+        .set(&DataKey::ContinuityRequirement, &continuity_requirement);
 }
 
 fn set_threshold(e: &Env, threshold: u32) {
-    e.storage().instance().set(&DataKey::Threshold, &threshold);
+    e.storage()
+        .instance()
+        .set(&DataKey::Threshold, &threshold);
 }
 
 fn get_epoch_duration(e: &Env) -> u32 {
-    e.storage().instance().get::<_, u32>(&DataKey::EpochDuration)
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::EpochDuration)
         .expect("Contract not initialized")
 }
 
-fn get_current_epoch(e: &Env) -> u32 {
-    let current_timestamp = e.ledger().timestamp();
-    let current_epoch = current_timestamp / u64::from(get_epoch_duration(e));
-    current_epoch.try_into().unwrap()
-}
-
 fn get_continuity(e: &Env) -> u32 {
-    e.storage().instance().get::<_, u32>(&DataKey::Continuity)
+    e.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::Continuity)
         .expect("Contract not initialized")
 }
 
 fn set_continuity(e: &Env, continuity: u32) {
-    e.storage().instance().set(&DataKey::Continuity, &continuity);
+    e.storage()
+        .instance()
+        .set(&DataKey::Continuity, &continuity);
 }
 
+// NEW: Helper to store and retrieve the start time
+fn get_start_time(e: &Env) -> u64 {
+    e.storage()
+        .instance()
+        .get::<_, u64>(&DataKey::StartTime)
+        .expect("Contract not initialized")
+}
+
+// --------------
+// get_current_epoch: updated to use start_time
+// --------------
+fn get_current_epoch(e: &Env) -> u32 {
+    let current_timestamp = e.ledger().timestamp();
+    let epoch_duration = get_epoch_duration(e);
+    // retrieve the user-defined start_time
+    let start_time = get_start_time(e);
+
+    // Safely compute the elapsed time from 'start_time' up to now
+    let elapsed = current_timestamp.saturating_sub(start_time);
+    let current_epoch = elapsed / u64::from(epoch_duration);
+
+    current_epoch.try_into().unwrap()
+}
+
+// --------------
+// Main Contract
+// --------------
 #[contract]
 pub struct WeatherOracle;
 
@@ -94,7 +167,9 @@ impl WeatherOracle {
         continuity_requirement: u32,
         threshold: u32,
         token: Address,
-        recipient: Address
+        recipient: Address,
+        // NEW: Accept a 'start_time' param
+        start_time: u64,
     ) {
         assert!(
             !e.storage().instance().has(&DataKey::Initialized),
@@ -103,29 +178,36 @@ impl WeatherOracle {
 
         let initial_continuity: u32 = 0;
 
+        // Store basic contract configuration
         e.storage().instance().set(&DataKey::ContractOwner, &caller);
         e.storage().instance().set(&DataKey::Initialized, &true);
         e.storage().instance().set(&DataKey::Relayer, &relayer);
-        e.storage().instance().set(&DataKey::EpochDuration, &epoch_duration);
-        e.storage().instance().set(&DataKey::ContinuityRequirement, &continuity_requirement);
+        e.storage()
+            .instance()
+            .set(&DataKey::EpochDuration, &epoch_duration);
+        e.storage()
+            .instance()
+            .set(&DataKey::ContinuityRequirement, &continuity_requirement);
         e.storage().instance().set(&DataKey::Threshold, &threshold);
         e.storage().instance().set(&DataKey::Token, &token);
         e.storage().instance().set(&DataKey::Recipient, &recipient);
         e.storage().instance().set(&DataKey::Continuity, &initial_continuity);
 
-        let current_epoch = get_current_epoch(&e);
+        // NEW: Store the user-provided start_time
+        e.storage().instance().set(&DataKey::StartTime, &start_time);
+
+        // Initialize epoch data for the current epoch
         let initial_value: u32 = 0;
         let epoch_data = EpochData { value: initial_value };
-        e.storage().instance().set(&DataKey::EpochData(current_epoch), &epoch_data);
-        e.storage().instance().set(&DataKey::LatestUpdate, &current_epoch);
+        e.storage()
+            .instance()
+            .set(&DataKey::EpochData(initial_value), &epoch_data);
+        e.storage()
+            .instance()
+            .set(&DataKey::LatestUpdate, &initial_value);
     }
 
-    pub fn set_value(
-        e: Env,
-        caller: Address,
-        value: u32,
-        epoch: u32,
-    ) {
+    pub fn set_value(e: Env, caller: Address, value: u32, epoch: u32) {
         caller.require_auth();
         assert_eq!(
             caller,
@@ -151,6 +233,10 @@ impl WeatherOracle {
         let epoch_data = EpochData { value };
 
         e.storage().instance().set(&DataKey::EpochData(epoch), &epoch_data);
+
+        e.storage()
+            .instance()
+            .set(&DataKey::EpochData(epoch), &epoch_data);
         e.storage().instance().set(&DataKey::LatestUpdate, &epoch);
 
         let threshold = get_threshold(&e);
@@ -162,31 +248,71 @@ impl WeatherOracle {
 
             if continuity + 1 >= continuity_requirement {
                 let contract_address = e.current_contract_address();
-                let token = e.storage().instance().get::<_, Address>(&DataKey::Token)
+                let token = e
+                    .storage()
+                    .instance()
+                    .get::<_, Address>(&DataKey::Token)
                     .expect("Contract not initialized");
-                let token_client: token::TokenClient = token::Client::new(&e, &token);
-                let balance = token_client.balance(&e.current_contract_address());
-                token_client.transfer(&contract_address, &e.storage().instance().get::<_, Address>(&DataKey::Recipient).expect("Contract not initialized"), &balance);
+                let token_client: token::Client = token::Client::new(&e, &token);
+                let balance = token_client.balance(&contract_address);
+                let recipient = e
+                    .storage()
+                    .instance()
+                    .get::<_, Address>(&DataKey::Recipient)
+                    .expect("Contract not initialized");
+                token_client.transfer(&contract_address, &recipient, &balance);
             }
         } else {
-            e.storage().instance().set(&DataKey::Continuity, &0);
+            set_continuity(&e, 0);
         }
 
+        // Emit Value Set Event
+        let value_event = ValueSetEvent {
+            relayer: caller.clone(),
+            epoch,
+            value,
+            continuity: get_continuity(&e),
+        };
+        e.events()
+            .publish((COALA, symbol_short!("value_set")), value_event);
     }
 
-    pub fn get_value(
-        e: Env,
-        epoch: u32,
-    ) -> u32 {
+    pub fn withdraw(e: Env, caller: Address, amount: u128, recipient: Address) {
+        caller.require_auth();
+        assert_eq!(
+            caller,
+            Self::get_contract_owner(e.clone()),
+            "Caller is not the contract owner"
+        );
+
+        let token = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::Token)
+            .expect("Contract not initialized");
+        let token_client: token::Client = token::Client::new(&e, &token);
+        let contract_address = e.current_contract_address();
+        let balance = token_client.balance(&contract_address);
+        assert!(balance as u128 >= amount, "Insufficient balance");
+
+        token_client.transfer(&contract_address, &recipient, &(amount as i128));
+
+        // Emit Withdraw Event
+        let withdraw_event = WithdrawEvent {
+            caller: caller.clone(),
+            amount,
+            recipient: recipient.clone(),
+        };
+        e.events()
+            .publish((COALA, symbol_short!("withdraw")), withdraw_event);
+    }
+
+    pub fn get_value(e: Env, epoch: u32) -> u32 {
         let epoch_data = get_epoch_data(&e, epoch);
         epoch_data.value
     }
 
-    pub fn set_continuity_requirement(
-        e: Env,
-        caller: Address,
-        continuity_requirement: u32,
-    ) {
+    pub fn set_continuity_requirement(e: Env, caller: Address, continuity_requirement: u32) {
         caller.require_auth();
         assert_eq!(
             caller,
@@ -196,11 +322,7 @@ impl WeatherOracle {
         set_continuity_requirement(&e, continuity_requirement);
     }
 
-    pub fn set_threshold(
-        e: Env,
-        caller: Address,
-        threshold: u32,
-    ) {
+    pub fn set_threshold(e: Env, caller: Address, threshold: u32) {
         caller.require_auth();
         assert_eq!(
             caller,
@@ -210,6 +332,9 @@ impl WeatherOracle {
         set_threshold(&e, threshold);
     }
 
+    // --------------
+    // Getter methods
+    // --------------
     pub fn get_contract_owner(e: Env) -> Address {
         get_contract_owner(&e)
     }
@@ -226,7 +351,7 @@ impl WeatherOracle {
         get_threshold(&e)
     }
 
-    pub fn get_last_update_time(e: Env) -> u64 {
+    pub fn get_last_update_time(e: Env) -> u32 {
         get_last_update_time(&e)
     }
 
@@ -240,6 +365,10 @@ impl WeatherOracle {
 
     pub fn get_continuity(e: Env) -> u32 {
         get_continuity(&e)
+    }
+
+    pub fn get_start_time(e: Env) -> u64 {
+        get_start_time(&e)
     }
 }
 

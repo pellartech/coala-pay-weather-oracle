@@ -47,7 +47,8 @@ fn create_weather_oracle_contract<'a>(
         threshold,
         token,
         recipient,
-        start_time, // Convert &u64 -> u64
+        start_time,
+        &100u128
     );
     weather_oracle
 }
@@ -216,6 +217,8 @@ fn test_value_updates_and_continuity() {
         1000,
         "Recipient should have received tokens"
     );
+
+    assert_eq!(weather_oracle.get_funds_released(), true, "Funds should be released after continuity is met");
 }
 
 #[test]
@@ -259,7 +262,7 @@ fn test_value_below_threshold_resets_continuity() {
         "Continuity should be 1 after setting value above threshold"
     );
 
-    // // Next, set value below threshold => continuity should reset to 0
+    // Next, set value below threshold => continuity should reset to 0
     weather_oracle.set_value(&relayer, &5, &2); // 5 < threshold=10
     assert_eq!(
         weather_oracle.get_continuity(),
@@ -456,67 +459,196 @@ fn test_timestamp_behavior() {
 
     // Basic checks
     assert_eq!(weather_oracle.get_contract_owner(), owner);
-    // assert_eq!(weather_oracle.get_start_time(), 1737061157);
 
-    // The ledger’s "current" time = start_time => so get_current_epoch() should be 0
-    // assert_eq!(weather_oracle.get_current_epoch(), 0, "Expect epoch=0 right after init");
-
-    // ------------------------------------------------------------------
-    // 4. Mint tokens to the contract, just like other tests
-    // ------------------------------------------------------------------
+    // Mint tokens to the contract
     token_admin.mint(&owner, &1000);
     token.transfer(&owner, &weather_oracle.address, &1000);
     assert_eq!(token.balance(&weather_oracle.address), 1000);
 
-    // ------------------------------------------------------------------
-    // 5. Advance ledger time by 1 day => epoch=1
-    // ------------------------------------------------------------------
+    // Advance ledger time by 2 days => epoch=2
     let one_day = 60 * 60 * 24;
-    e.ledger().set_timestamp(e.ledger().timestamp() + one_day);
-    e.ledger().set_timestamp(e.ledger().timestamp() + one_day);
+    e.ledger().set_timestamp(e.ledger().timestamp() + (one_day * 2));
 
-    // Confirm epoch is now 1
-    // assert_eq!(weather_oracle.get_current_epoch(), 1, "After 1 day => epoch=1");
-
-    // set_value(epoch=1, value=50) => above threshold => continuity=1
+    // Now do a set_value => ...
     weather_oracle.set_value(&relayer, &50, &1);
     assert_eq!(weather_oracle.get_continuity(), 1, "Continuity => 1");
-
-    // ------------------------------------------------------------------
-    // 6. Advance ledger time again => epoch=2
-    // ------------------------------------------------------------------
-    e.ledger().set_timestamp(e.ledger().timestamp() + one_day);
-    // assert_eq!(weather_oracle.get_current_epoch(), 2, "After 2 days => epoch=2");
-
-    // set_value(epoch=2, value=5) => below threshold => continuity => 0
-    weather_oracle.set_value(&relayer, &5, &2);
-    // assert_eq!(weather_oracle.get_continuity(), 0, "Should reset to 0 if value < threshold");
-
-    // ------------------------------------------------------------------
-    // 7. Advance ledger => epoch=3 => set_value => ...
-    // ------------------------------------------------------------------
-    e.ledger().set_timestamp(e.ledger().timestamp() + one_day);
-    // assert_eq!(weather_oracle.get_current_epoch(), 3);
-
-    weather_oracle.set_value(&relayer, &50, &3);
-    // continuity => 1 again
-    assert_eq!(weather_oracle.get_continuity(), 1, "Goes back up if value > threshold");
-
-    // And so on. This structure demonstrates how you can manipulate
-    // ledger timestamps and verify epochs, continuity, etc.
 }
 
+// ----------------------------------------------------------------------
+// Test: Fund Success + Check `funded_by`
+// ----------------------------------------------------------------------
+#[test]
+fn test_fund_success() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    // 1. Setup addresses
+    let owner = Address::generate(&e);
+    let relayer = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let funder = Address::generate(&e); // The actual funder
+
+    // 2. Create token contract
+    let (token, token_admin) = create_token_contract(&e, &owner);
+
+    // 3. Configure ledger and define contract parameters
+    let start_time = e.ledger().timestamp();
+    let epoch_duration = 60 * 60 * 24;   // 1 day
+    let continuity_requirement = 2;
+    let threshold = 10u32;
+    let funding_amount = 100u128;        // <-- This is the one-time funding amount
+
+    // 4. Register & initialize the WeatherOracle contract with "funding_amount=100"
+    let weather_oracle = WeatherOracleClient::new(&e, &e.register_contract(None, WeatherOracle {}));
+    weather_oracle.initialize(
+        &owner,
+        &relayer,
+        &epoch_duration,
+        &continuity_requirement,
+        &threshold,
+        &token.address,
+        &recipient,
+        &start_time,
+        &funding_amount, // <--- pass the funding amount
+    );
+
+    // Verify preconditions: contract is NOT funded yet
+    assert_eq!(weather_oracle.is_funded(), false, "Contract should not be funded");
+    assert_eq!(weather_oracle.get_funded_balance(), 0, "Funded balance should be zero");
+    // `get_funded_by` should be None
+    assert_eq!(weather_oracle.get_funded_by(), None, "No funder should be set yet");
+
+    // 5. Mint tokens to the "funder" so they can supply the 100 tokens
+    token_admin.mint(&owner, &200i128); // mint 200 to 'owner'
+    // Transfer 100 from owner -> funder to give the funder a balance
+    token.transfer(&owner, &funder, &100i128);
+    assert_eq!(token.balance(&funder), 100);
+
+    // 6. Call `fund` from the funder
+    weather_oracle.fund(&funder);
+
+    // 7. Confirm that the contract is now funded
+    assert_eq!(weather_oracle.is_funded(), true, "Should be marked as funded");
+    assert_eq!(
+        weather_oracle.get_funded_balance(),
+        100u128,
+        "Funded balance should be 100"
+    );
+    assert_eq!(
+        token.balance(&weather_oracle.address),
+        100,
+        "Contract's token balance should now be 100"
+    );
+    assert_eq!(
+        token.balance(&funder),
+        0,
+        "Funder's balance should have decreased by 100"
+    );
+
+    // 8. Confirm the "funded_by" field is set to `funder`
+    let funded_by = weather_oracle.get_funded_by();
+    assert_eq!(
+        funded_by,
+        Some(funder.clone()),
+        "The contract should record who funded it"
+    );
+}
 
 // ----------------------------------------------------------------------
-// (Optional) If you want to re-enable event tests, ensure the data matches
-// the new contract design. For example:
+// Test: Fund Twice Should Fail
 // ----------------------------------------------------------------------
-// #[test]
-// fn test_value_set_event() {
-//     // ...
-// }
-//
-// #[test]
-// fn test_withdraw_event() {
-//     // ...
-// }
+#[test]
+#[should_panic(expected = "Contract has already been funded")]
+fn test_fund_twice_should_fail() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let owner = Address::generate(&e);
+    let relayer = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let funder = Address::generate(&e);
+
+    let (token, token_admin) = create_token_contract(&e, &owner);
+
+    let start_time = e.ledger().timestamp();
+    let funding_amount = 50u128;
+
+    // Initialize with a funding_amount of 50
+    let weather_oracle = WeatherOracleClient::new(&e, &e.register_contract(None, WeatherOracle {}));
+    weather_oracle.initialize(
+        &owner,
+        &relayer,
+        &(60 * 60 * 24),
+        &2,
+        &10,
+        &token.address,
+        &recipient,
+        &start_time,
+        &funding_amount,
+    );
+
+    // Mint tokens and give them to the funder
+    token_admin.mint(&owner, &50i128);
+    token.transfer(&owner, &funder, &50i128);
+
+    // First `fund` call => success
+    weather_oracle.fund(&funder);
+
+    // Second `fund` call => should panic
+    weather_oracle.fund(&funder);
+}
+
+// ----------------------------------------------------------------------
+// Test: Fund Insufficient Balance
+// ----------------------------------------------------------------------
+#[test]
+fn test_fund_insufficient_balance() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let owner = Address::generate(&e);
+    let relayer = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    let funder = Address::generate(&e);
+
+    let (token, _) = create_token_contract(&e, &owner);
+
+    let start_time = e.ledger().timestamp();
+    let funding_amount = 100u128;
+
+    // Initialize contract requiring 100 tokens for funding
+    let weather_oracle = WeatherOracleClient::new(&e, &e.register_contract(None, WeatherOracle {}));
+    weather_oracle.initialize(
+        &owner,
+        &relayer,
+        &(60 * 60 * 24),
+        &2,
+        &10,
+        &token.address,
+        &recipient,
+        &start_time,
+        &funding_amount,
+    );
+
+    // `get_funded_by` should be None at this point
+    assert_eq!(weather_oracle.get_funded_by(), None, "Should not have a funder yet");
+
+    // We intentionally do NOT mint any tokens to `funder` => balance=0
+    // Attempt to fund, which should fail due to insufficient token balance
+    // We'll call the "try_fund" version to catch the error rather than panic the entire test.
+    let result = weather_oracle.try_fund(&funder);
+    assert!(
+        result.is_err() || result.unwrap().is_err(),
+        "Funding without enough tokens should fail"
+    );
+
+    // Confirm the contract is still not funded
+    assert_eq!(weather_oracle.is_funded(), false);
+    assert_eq!(weather_oracle.get_funded_balance(), 0);
+    assert_eq!(weather_oracle.get_funded_by(), None, "No funder should be recorded yet");
+    assert_eq!(
+        token.balance(&weather_oracle.address),
+        0,
+        "Contract's token balance should still be 0"
+    );
+}

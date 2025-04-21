@@ -26,6 +26,13 @@ pub struct ValueSetEvent {
     pub continuity: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub struct FundEvent {
+    pub caller: Address,
+    pub amount: u128,
+}
+
 #[derive(Clone, Debug)]
 #[contracttype]
 pub struct EpochData {
@@ -46,8 +53,12 @@ pub enum DataKey {
     LatestUpdate,
     Token,
     Recipient,
-    // NEW: Store the start_time used to calculate epochs
     StartTime,
+    FundedBalance,
+    FundingAmount,
+    IsFunded,
+    FundedBy,
+    FundsReleased,
 }
 
 // --------------
@@ -127,7 +138,6 @@ fn set_continuity(e: &Env, continuity: u32) {
         .set(&DataKey::Continuity, &continuity);
 }
 
-// NEW: Helper to store and retrieve the start time
 fn get_start_time(e: &Env) -> u64 {
     e.storage()
         .instance()
@@ -135,25 +145,66 @@ fn get_start_time(e: &Env) -> u64 {
         .expect("Contract not initialized")
 }
 
-// --------------
-// get_current_epoch: updated to use start_time
-// --------------
+fn get_funded_balance(e: &Env) -> u128 {
+    e.storage()
+        .instance()
+        .get::<_, u128>(&DataKey::FundedBalance)
+        .unwrap_or(0)
+}
+
+fn set_funded_balance(e: &Env, amount: u128) {
+    e.storage()
+        .instance()
+        .set(&DataKey::FundedBalance, &amount);
+}
+
+fn get_funding_amount(e: &Env) -> u128 {
+    e.storage()
+        .instance()
+        .get::<_, u128>(&DataKey::FundingAmount)
+        .expect("Contract not initialized")
+}
+
+fn is_funded(e: &Env) -> bool {
+    e.storage()
+        .instance()
+        .get::<_, bool>(&DataKey::IsFunded)
+        .unwrap_or(false)
+}
+
+fn set_is_funded(e: &Env, funded: bool) {
+    e.storage().instance().set(&DataKey::IsFunded, &funded);
+}
+
+fn set_funded_by(e: &Env, caller: &Address) {
+    e.storage().instance().set(&DataKey::FundedBy, caller);
+}
+fn get_funded_by(e: &Env) -> Option<Address> {
+    e.storage().instance().get::<_, Address>(&DataKey::FundedBy)
+}
+
 fn get_current_epoch(e: &Env) -> u32 {
     let current_timestamp = e.ledger().timestamp();
     let epoch_duration = get_epoch_duration(e);
-    // retrieve the user-defined start_time
     let start_time = get_start_time(e);
 
-    // Safely compute the elapsed time from 'start_time' up to now
     let elapsed = current_timestamp.saturating_sub(start_time);
     let current_epoch = elapsed / u64::from(epoch_duration);
 
     current_epoch.try_into().unwrap()
 }
 
-// --------------
-// Main Contract
-// --------------
+fn set_funds_released(e: &Env, released: bool) {
+    e.storage().instance().set(&DataKey::FundsReleased, &released);
+}
+
+fn get_funds_released(e: &Env) -> bool {
+    e.storage()
+        .instance()
+        .get::<_, bool>(&DataKey::FundsReleased)
+        .unwrap_or(false)
+}
+
 #[contract]
 pub struct WeatherOracle;
 
@@ -168,19 +219,17 @@ impl WeatherOracle {
         threshold: u32,
         token: Address,
         recipient: Address,
-        // NEW: Accept a 'start_time' param
         start_time: u64,
+        funding_amount: u128,
     ) {
         assert!(
             !e.storage().instance().has(&DataKey::Initialized),
             "Contract already initialized"
         );
 
-        let initial_continuity: u32 = 0;
-
         // Store basic contract configuration
-        e.storage().instance().set(&DataKey::ContractOwner, &caller);
         e.storage().instance().set(&DataKey::Initialized, &true);
+        e.storage().instance().set(&DataKey::ContractOwner, &caller);
         e.storage().instance().set(&DataKey::Relayer, &relayer);
         e.storage()
             .instance()
@@ -191,9 +240,7 @@ impl WeatherOracle {
         e.storage().instance().set(&DataKey::Threshold, &threshold);
         e.storage().instance().set(&DataKey::Token, &token);
         e.storage().instance().set(&DataKey::Recipient, &recipient);
-        e.storage().instance().set(&DataKey::Continuity, &initial_continuity);
-
-        // NEW: Store the user-provided start_time
+        e.storage().instance().set(&DataKey::Continuity, &0u32);
         e.storage().instance().set(&DataKey::StartTime, &start_time);
 
         // Initialize epoch data for the current epoch
@@ -205,6 +252,10 @@ impl WeatherOracle {
         e.storage()
             .instance()
             .set(&DataKey::LatestUpdate, &initial_value);
+
+        e.storage().instance().set(&DataKey::FundingAmount, &funding_amount);
+        e.storage().instance().set(&DataKey::IsFunded, &false);
+        e.storage().instance().set(&DataKey::FundedBalance, &0u128);
     }
 
     pub fn set_value(e: Env, caller: Address, value: u32, epoch: u32) {
@@ -216,24 +267,20 @@ impl WeatherOracle {
         );
 
         let current_epoch = get_current_epoch(&e);
-
         assert!(
-            epoch < current_epoch,
-            "Value can only be updated for previous epochs"
+            epoch <= current_epoch,
+            "Value can only be updated for previous or current epoch"
         );
 
-        let latest_update: u32 = e.storage().instance().get::<_, u32>(&DataKey::LatestUpdate)
+        let latest_update: u32 = e
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::LatestUpdate)
             .expect("Contract not initialized");
 
-        assert!(
-            epoch == latest_update + 1,
-            "Epoch must be sequential"
-        );
+        assert!(epoch == latest_update + 1, "Epoch must be sequential");
 
         let epoch_data = EpochData { value };
-
-        e.storage().instance().set(&DataKey::EpochData(epoch), &epoch_data);
-
         e.storage()
             .instance()
             .set(&DataKey::EpochData(epoch), &epoch_data);
@@ -242,7 +289,7 @@ impl WeatherOracle {
         let threshold = get_threshold(&e);
         let continuity_requirement = get_continuity_requirement(&e);
 
-        if value > threshold {
+        if value >= threshold {
             let continuity: u32 = get_continuity(&e);
             set_continuity(&e, continuity + 1);
 
@@ -261,6 +308,7 @@ impl WeatherOracle {
                     .get::<_, Address>(&DataKey::Recipient)
                     .expect("Contract not initialized");
                 token_client.transfer(&contract_address, &recipient, &balance);
+                set_funds_released(&e, true);
             }
         } else {
             set_continuity(&e, 0);
@@ -293,6 +341,7 @@ impl WeatherOracle {
         let token_client: token::Client = token::Client::new(&e, &token);
         let contract_address = e.current_contract_address();
         let balance = token_client.balance(&contract_address);
+
         assert!(balance as u128 >= amount, "Insufficient balance");
 
         token_client.transfer(&contract_address, &recipient, &(amount as i128));
@@ -307,34 +356,47 @@ impl WeatherOracle {
             .publish((COALA, symbol_short!("withdraw")), withdraw_event);
     }
 
+    pub fn fund(e: Env, caller: Address) {
+        // Require that the caller has authorized this call
+        caller.require_auth();
+
+        // Check if already funded
+        if is_funded(&e) {
+            panic!("Contract has already been funded");
+        }
+
+        // Transfer the pre-defined funding amount
+        let funding_amount = get_funding_amount(&e);
+        let contract_address = e.current_contract_address();
+        let token = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::Token)
+            .expect("Contract not initialized");
+        let token_client: token::Client = token::Client::new(&e, &token);
+
+        token_client.transfer(&caller, &contract_address, &(funding_amount as i128));
+
+        // Mark as funded and set the funded_balance
+        set_is_funded(&e, true);
+        set_funded_balance(&e, funding_amount);
+        set_funded_by(&e, &caller);
+
+        let fund_event = FundEvent {
+            caller: caller.clone(),
+            amount: funding_amount,
+        };
+        e.events().publish((COALA, symbol_short!("fund")), fund_event);
+    }
+
+    // -----------------
+    // Getter methods
+    // -----------------
     pub fn get_value(e: Env, epoch: u32) -> u32 {
         let epoch_data = get_epoch_data(&e, epoch);
         epoch_data.value
     }
 
-    pub fn set_continuity_requirement(e: Env, caller: Address, continuity_requirement: u32) {
-        caller.require_auth();
-        assert_eq!(
-            caller,
-            Self::get_contract_owner(e.clone()),
-            "Caller is not the contract owner"
-        );
-        set_continuity_requirement(&e, continuity_requirement);
-    }
-
-    pub fn set_threshold(e: Env, caller: Address, threshold: u32) {
-        caller.require_auth();
-        assert_eq!(
-            caller,
-            Self::get_contract_owner(e.clone()),
-            "Caller is not the contract owner"
-        );
-        set_threshold(&e, threshold);
-    }
-
-    // --------------
-    // Getter methods
-    // --------------
     pub fn get_contract_owner(e: Env) -> Address {
         get_contract_owner(&e)
     }
@@ -369,6 +431,46 @@ impl WeatherOracle {
 
     pub fn get_start_time(e: Env) -> u64 {
         get_start_time(&e)
+    }
+
+    pub fn get_funded_balance(e: Env) -> u128 {
+        get_funded_balance(&e)
+    }
+
+    pub fn get_funding_amount(e: Env) -> u128 {
+        get_funding_amount(&e)
+    }
+
+    pub fn is_funded(e: Env) -> bool {
+        is_funded(&e)
+    }
+
+    pub fn get_funded_by(e: Env) -> Option<Address> {
+        get_funded_by(&e)
+    }
+
+    pub fn set_continuity_requirement(e: Env, caller: Address, continuity_requirement: u32) {
+        caller.require_auth();
+        assert_eq!(
+            caller,
+            Self::get_contract_owner(e.clone()),
+            "Caller is not the contract owner"
+        );
+        set_continuity_requirement(&e, continuity_requirement);
+    }
+
+    pub fn set_threshold(e: Env, caller: Address, threshold: u32) {
+        caller.require_auth();
+        assert_eq!(
+            caller,
+            Self::get_contract_owner(e.clone()),
+            "Caller is not the contract owner"
+        );
+        set_threshold(&e, threshold);
+    }
+
+    pub fn get_funds_released(e: Env) -> bool {
+        get_funds_released(&e)
     }
 }
 

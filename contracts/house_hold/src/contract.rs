@@ -15,13 +15,14 @@ pub struct HouseHold;
 
 #[contractimpl]
 impl HouseHold {
-    pub fn initialize(e: Env, admin: Address, usd_address: Address) {
+    pub fn initialize(e: Env, admin: Address, usd_address: Address, funding_account: Address) {
         assert!(!get_initialized(&e), "Contract already initialized");
 
         // Store basic contract configuration
         set_initialized(&e, &true);
         set_admin(&e, &admin);
         set_usd_address(&e, &usd_address);
+        set_funding_account(&e, &funding_account);
     }
 
     fn check_auth(e: &Env, admin: &Address) {
@@ -85,7 +86,7 @@ impl HouseHold {
 
         let usd_address = get_usd_address(&e);
         let token_client: token::Client = token::Client::new(&e, &usd_address);
-
+        let funding_account = get_funding_account(&e);
         let contract_address = e.current_contract_address();
 
         for address in addresses {
@@ -94,8 +95,9 @@ impl HouseHold {
                 "Address already paid"
             );
             set_paid_address(&e, &batch_id, &address);
-            token_client.transfer(
+            token_client.transfer_from(
                 &contract_address,
+                &funding_account,
                 &address,
                 &(amount_per_beneficiary as i128),
             );
@@ -126,6 +128,11 @@ impl HouseHold {
             .publish((COALA_HOUSE_HOLD, "fund_recovered"), event);
     }
 
+    pub fn set_funding_account(e: Env, admin: Address, funding_account: Address) {
+        Self::check_auth(&e, &admin);
+        set_funding_account(&e, &funding_account);
+    }
+    
     // -----------------
     // Getter methods
     // -----------------

@@ -29,19 +29,21 @@ fn create_house_hold_contract<'a>(
     e: &Env,
     admin: &Address,
     usd_address: &Address,
+    funding: &Address
 ) -> HouseHoldClient<'a> {
     // Register the contract and create the client
     let contract_id = e.register(HouseHold, {});
     let house_hold = HouseHoldClient::new(e, &contract_id);
 
     // Initialize, passing the new `start_time`
-    house_hold.initialize(admin, usd_address);
+    house_hold.initialize(admin, usd_address, funding);
     house_hold
 }
 
 fn initialize_house_hold_contract<'a>(
     e: &Env,
 ) -> (
+    Address,
     Address,
     Address,
     HouseHoldClient<'a>,
@@ -57,9 +59,11 @@ fn initialize_house_hold_contract<'a>(
 
     let usd_address = token.address.clone();
 
-    // Create weather oracle, passing in start_time
-    let house_hold = create_house_hold_contract(&e, &admin, &usd_address);
-    (admin, usd_address, house_hold, token, token_admin)
+    let funding = Address::generate(&e);
+    token_admin.mint(&funding, &1000);
+    let house_hold = create_house_hold_contract(&e, &admin, &usd_address, &funding);
+    token.approve(&funding, &house_hold.address, &1_000_000, &0);
+    (admin, usd_address, funding, house_hold, token, token_admin)
 }
 
 // ----------------------------------------------------------------------
@@ -68,7 +72,7 @@ fn initialize_house_hold_contract<'a>(
 #[test]
 fn test_initialization() {
     let e = Env::default();
-    let (admin, usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
 
     assert_eq!(
         house_hold.get_initialized(),
@@ -95,8 +99,8 @@ fn test_initialization() {
 #[should_panic(expected = "Contract already initialized")]
 fn test_initialization_twice() {
     let e = Env::default();
-    let (admin, usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
-    house_hold.initialize(&admin, &usd_address);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    house_hold.initialize(&admin, &usd_address, &funder_address);
 }
 
 // ----------------------------------------------------------------------
@@ -105,7 +109,7 @@ fn test_initialization_twice() {
 #[test]
 fn test_contract_pause() {
     let e = Env::default();
-    let (admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
 
     house_hold.set_is_contract_paused(&admin, &true);
 
@@ -131,7 +135,7 @@ fn test_contract_pause() {
 #[should_panic(expected = "Caller is not the admin")]
 fn test_unauthorized_contract_pause() {
     let e = Env::default();
-    let (_admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
 
     let unauthorized = Address::generate(&e);
     house_hold.set_is_contract_paused(&unauthorized, &true);
@@ -143,7 +147,7 @@ fn test_unauthorized_contract_pause() {
 #[test]
 fn test_set_usd_address() {
     let e = Env::default();
-    let (admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
 
     let new_usd_address = Address::generate(&e);
     house_hold.set_usd_address(&admin, &new_usd_address);
@@ -162,7 +166,7 @@ fn test_set_usd_address() {
 #[should_panic(expected = "Caller is not the admin")]
 fn test_unauthorized_set_usd_address() {
     let e = Env::default();
-    let (_admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
 
     let unauthorized = Address::generate(&e);
     let new_usd_address = Address::generate(&e);
@@ -175,7 +179,7 @@ fn test_unauthorized_set_usd_address() {
 #[test]
 fn test_batch_creation() {
     let e = Env::default();
-    let (admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
 
     let batch_data = Batch {
         amount_per_beneficiary: 100,
@@ -213,7 +217,7 @@ fn test_unauthorized_batch_creation() {
     let e = Env::default();
     e.mock_all_auths();
 
-    let (_admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
 
     let unauthorized = Address::generate(&e);
 
@@ -232,7 +236,7 @@ fn test_unauthorized_batch_creation() {
 #[should_panic(expected = "Contract is paused")]
 fn test_contract_paused_batch_creation() {
     let e = Env::default();
-    let (admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
     house_hold.set_is_contract_paused(&admin, &true);
     house_hold.create_batch(&admin, &100, &Batch {
         amount_per_beneficiary: 100,
@@ -246,10 +250,7 @@ fn test_contract_paused_batch_creation() {
 #[test]
 fn test_batch_payment() {
     let e = Env::default();
-    let (admin, _usd_address, house_hold, token, token_admin) = initialize_house_hold_contract(&e);
-
-    token_admin.mint(&admin, &1000);
-    token.transfer(&admin, &house_hold.address, &1000);
+    let (admin, usd_address, funder_address, house_hold, token, token_admin) = initialize_house_hold_contract(&e);
 
     let batch_id = 1;
     let batch_data = Batch {
@@ -264,7 +265,7 @@ fn test_batch_payment() {
     house_hold.pay_batch(&admin, &batch_id, &addresses, &false);
 
     assert_eq!(
-        token.balance(&house_hold.address),
+        token.balance(&funder_address),
         800,
         "Token balance not updated correctly"
     );
@@ -291,10 +292,7 @@ fn test_batch_payment() {
 #[test]
 fn test_batch_payment_with_reduced_amount() {
     let e = Env::default();
-    let (admin, _usd_address, house_hold, token, token_admin) = initialize_house_hold_contract(&e);
-
-    token_admin.mint(&admin, &1000);
-    token.transfer(&admin, &house_hold.address, &1000);
+    let (admin, usd_address, funder_address, house_hold, token, token_admin) = initialize_house_hold_contract(&e);
 
     let batch_id = 1;
     let batch_data = Batch {
@@ -310,7 +308,7 @@ fn test_batch_payment_with_reduced_amount() {
     house_hold.pay_batch(&admin, &batch_id, &addresses, &true);
 
     assert_eq!(
-        token.balance(&house_hold.address),
+        token.balance(&funder_address),
         900,
         "Token balance not updated correctly"
     );
@@ -338,7 +336,7 @@ fn test_batch_payment_with_reduced_amount() {
 #[should_panic(expected = "Caller is not the admin")]
 fn test_unauthorized_batch_payment() {
     let e = Env::default();
-    let (_admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
 
     let unauthorized = Address::generate(&e);
     let batch_id = 1;
@@ -353,7 +351,7 @@ fn test_unauthorized_batch_payment() {
 #[should_panic(expected = "Batch does not exist")]
 fn test_batch_payment_not_existing() {
     let e = Env::default();
-    let (admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
 
     let batch_id = 1;
     let addresses = vec![&e];
@@ -367,7 +365,7 @@ fn test_batch_payment_not_existing() {
 #[should_panic(expected = "Contract is paused")]
 fn test_contract_paused_batch_payment() {
     let e = Env::default();
-    let (admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
     house_hold.set_is_contract_paused(&admin, &true);
     house_hold.pay_batch(&admin, &1, &vec![&e], &false);
 }
@@ -379,7 +377,7 @@ fn test_contract_paused_batch_payment() {
 fn test_recover_funds() {
     let e = Env::default();
     e.mock_all_auths();
-    let (admin, _usd_address, house_hold, token, token_admin) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, token, token_admin) = initialize_house_hold_contract(&e);
 
     let address1 = Address::generate(&e);
 
@@ -406,7 +404,7 @@ fn test_recover_funds() {
 #[should_panic(expected = "Caller is not the admin")]
 fn test_unauthorized_recover_funds() {
     let e = Env::default();
-    let (_admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
     let unauthorized = Address::generate(&e);
     house_hold.recover_funds(&unauthorized, &unauthorized, &unauthorized, &1000);
 }
@@ -418,7 +416,7 @@ fn test_unauthorized_recover_funds() {
 #[should_panic(expected = "Contract is paused")]
 fn test_contract_paused_recover_funds() {
     let e = Env::default();
-    let (admin, _usd_address, house_hold, _, _) = initialize_house_hold_contract(&e);
+    let (admin, usd_address, funder_address, house_hold, _, _) = initialize_house_hold_contract(&e);
     house_hold.set_is_contract_paused(&admin, &true);
     house_hold.recover_funds(&admin, &admin, &admin, &1000);
 }

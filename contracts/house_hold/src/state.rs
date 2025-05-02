@@ -94,13 +94,13 @@ pub fn get_batch(e: &Env, batch_id: &u128) -> Option<Batch> {
 
 pub fn set_paid_address(e: &Env, batch_id: &u128, address: &Address) {
     e.storage()
-        .instance()
+        .persistent()
         .set(&StorageKey::PaidAddresses(batch_id.clone(), address.clone()), &true);
 }
 
 pub fn get_paid_address(e: &Env, batch_id: &u128, address: &Address) -> bool {
     e.storage()
-        .instance()
+        .persistent()
         .get::<_, bool>(&StorageKey::PaidAddresses(batch_id.clone(), address.clone()))
         .unwrap_or(false)
 }

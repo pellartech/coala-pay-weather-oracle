@@ -82,13 +82,13 @@ pub fn get_usd_address(e: &Env) -> Address {
 
 pub fn set_batch(e: &Env, batch_id: &u128, batch: &Batch) {
     e.storage()
-        .instance()
+        .persistent()
         .set(&StorageKey::Batches(batch_id.clone()), batch);
 }
 
 pub fn get_batch(e: &Env, batch_id: &u128) -> Option<Batch> {
     e.storage()
-        .instance()
+        .persistent()
         .get::<_, Batch>(&StorageKey::Batches(batch_id.clone()))
 }
 

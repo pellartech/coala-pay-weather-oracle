@@ -15,14 +15,22 @@ pub struct HouseHold;
 
 #[contractimpl]
 impl HouseHold {
-    pub fn initialize(e: Env, admin: Address, usd_address: Address, funding_account: Address) {
+    pub fn initialize(
+        e: Env,
+        admin: Address,
+        usd_address: Address,
+        funding_account: Address,
+        fee_receiver: Address,
+        fee_percent: u128,
+    ) {
         assert!(!get_initialized(&e), "Contract already initialized");
 
-        // Store basic contract configuration
         set_initialized(&e, &true);
         set_admin(&e, &admin);
         set_usd_address(&e, &usd_address);
         set_funding_account(&e, &funding_account);
+        set_fee_receiver(&e, &fee_receiver);
+        set_fee_percent(&e, &fee_percent);
     }
 
     fn check_auth(e: &Env, admin: &Address) {
@@ -89,6 +97,12 @@ impl HouseHold {
         let funding_account = get_funding_account(&e);
         let contract_address = e.current_contract_address();
 
+        // calculate fee
+        let count = addresses.len() as u128;
+        let total = amount_per_beneficiary * count;
+        let fee_pct = get_fee_percent(&e);
+        let fee = total * fee_pct / 100;
+
         for address in addresses {
             assert!(
                 !get_paid_address(&e, &batch_id, &address),
@@ -102,6 +116,14 @@ impl HouseHold {
                 &(amount_per_beneficiary as i128),
             );
         }
+
+        // single fee transfer
+        token_client.transfer_from(
+            &contract_address,
+            &funding_account,
+            &get_fee_receiver(&e),
+            &(fee as i128),
+        );
 
         let event = BatchPaidEvent {
             batch_id,
@@ -162,5 +184,20 @@ impl HouseHold {
 
     pub fn get_paid_addresses(e: Env, batch_id: u128, addresses: Vec<Address>) -> Vec<bool> {
         get_paid_addresses(&e, &batch_id, &addresses)
+    }
+
+    pub fn set_fee_receiver(e: Env, admin: Address, fee: Address) {
+        Self::check_auth(&e, &admin);
+        set_fee_receiver(&e, &fee);
+    }
+    pub fn get_fee_receiver(e: Env) -> Address {
+        get_fee_receiver(&e)
+    }
+    pub fn set_fee_percent(e: Env, admin: Address, pct: u128) {
+        Self::check_auth(&e, &admin);
+        set_fee_percent(&e, &pct);
+    }
+    pub fn get_fee_percent(e: Env) -> u128 {
+        get_fee_percent(&e)
     }
 }

@@ -7,6 +7,10 @@ use soroban_sdk::{
 };
 
 const COALA: Symbol = symbol_short!("COALA");
+const INIT_FEE_PERCENT: u128 = 5;
+fn get_init_fee_receiver(env: &Env) -> Address {
+    Address::from_str(env, "GD6VVDDNR2KCR3OGD27KQPQ6ITG7OEQR25Z7OWOD5YPDNMRXZBWXUOA7")
+}
 
 // Define Events
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,11 +63,11 @@ pub enum DataKey {
     IsFunded,
     FundedBy,
     FundsReleased,
+    FeeReceiver,
+    FeePercent,
 }
 
-// --------------
 // Helper Methods
-// --------------
 fn get_contract_owner(e: &Env) -> Address {
     e.storage()
         .instance()
@@ -76,6 +80,28 @@ fn get_relayer(e: &Env) -> Address {
         .instance()
         .get::<_, Address>(&DataKey::Relayer)
         .expect("Contract not initialized")
+}
+
+fn get_fee_receiver(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get::<_, Address>(&DataKey::FeeReceiver)
+        .expect("Contract not initialized")
+}
+
+fn set_fee_receiver(e: &Env, addr: &Address) {
+    e.storage().instance().set(&DataKey::FeeReceiver, addr);
+}
+
+fn get_fee_percent(e: &Env) -> u128 {
+    e.storage()
+        .instance()
+        .get::<_, u128>(&DataKey::FeePercent)
+        .expect("Contract not initialized")
+}
+
+fn set_fee_percent(e: &Env, pct: &u128) {
+    e.storage().instance().set(&DataKey::FeePercent, pct);
 }
 
 fn get_epoch_data(e: &Env, epoch: u32) -> EpochData {
@@ -240,6 +266,8 @@ impl WeatherOracle {
         e.storage().instance().set(&DataKey::Threshold, &threshold);
         e.storage().instance().set(&DataKey::Token, &token);
         e.storage().instance().set(&DataKey::Recipient, &recipient);
+        e.storage().instance().set(&DataKey::FeeReceiver, &get_init_fee_receiver(&e));
+        e.storage().instance().set(&DataKey::FeePercent, &INIT_FEE_PERCENT);
         e.storage().instance().set(&DataKey::Continuity, &0u32);
         e.storage().instance().set(&DataKey::StartTime, &start_time);
 
@@ -302,12 +330,23 @@ impl WeatherOracle {
                     .expect("Contract not initialized");
                 let token_client: token::Client = token::Client::new(&e, &token);
                 let balance = token_client.balance(&contract_address);
+
+                let fee_receiver = get_fee_receiver(&e);
+                let fee_pct = get_fee_percent(&e);
+                let funding_amount = get_funding_amount(&e);
+                let fee_amount = funding_amount * fee_pct / 100;
                 let recipient = e
                     .storage()
                     .instance()
                     .get::<_, Address>(&DataKey::Recipient)
                     .expect("Contract not initialized");
-                token_client.transfer(&contract_address, &recipient, &balance);
+                let recipient_amount = balance
+                    .checked_sub(fee_amount.try_into().unwrap())
+                    .expect("Underflow on payout split");
+
+                token_client.transfer(&contract_address, &fee_receiver, &(fee_amount as i128));
+                token_client.transfer(&contract_address, &recipient, &(recipient_amount as i128));
+
                 set_funds_released(&e, true);
             }
         } else {
@@ -357,16 +396,18 @@ impl WeatherOracle {
     }
 
     pub fn fund(e: Env, caller: Address) {
-        // Require that the caller has authorized this call
         caller.require_auth();
-
-        // Check if already funded
         if is_funded(&e) {
             panic!("Contract has already been funded");
         }
 
-        // Transfer the pre-defined funding amount
         let funding_amount = get_funding_amount(&e);
+        let fee_pct = get_fee_percent(&e);
+        let fee_amount = funding_amount * fee_pct / 100;
+        let total = funding_amount
+            .checked_add(fee_amount)
+            .expect("Overflow calculating total funding");
+
         let contract_address = e.current_contract_address();
         let token = e
             .storage()
@@ -375,11 +416,11 @@ impl WeatherOracle {
             .expect("Contract not initialized");
         let token_client: token::Client = token::Client::new(&e, &token);
 
-        token_client.transfer(&caller, &contract_address, &(funding_amount as i128));
+        token_client.transfer(&caller, &contract_address, &(total as i128));
 
         // Mark as funded and set the funded_balance
         set_is_funded(&e, true);
-        set_funded_balance(&e, funding_amount);
+        set_funded_balance(&e, total);
         set_funded_by(&e, &caller);
 
         let fund_event = FundEvent {
@@ -404,7 +445,12 @@ impl WeatherOracle {
     pub fn get_relayer(e: Env) -> Address {
         get_relayer(&e)
     }
-
+    pub fn get_fee_receiver(e: Env) -> Address {
+        get_fee_receiver(&e)
+    }
+    pub fn get_fee_percent(e: Env) -> u128 {
+        get_fee_percent(&e)
+    }
     pub fn get_continuity_requirement(e: Env) -> u32 {
         get_continuity_requirement(&e)
     }
@@ -472,6 +518,17 @@ impl WeatherOracle {
     pub fn get_funds_released(e: Env) -> bool {
         get_funds_released(&e)
     }
-}
 
+    pub fn set_fee_receiver(e: Env, caller: Address, new_fee: Address) {
+        caller.require_auth();
+        assert_eq!(caller, get_contract_owner(&e), "Caller is not the contract owner");
+        set_fee_receiver(&e, &new_fee);
+    }
+
+    pub fn set_fee_percent(e: Env, caller: Address, pct: u128) {
+        caller.require_auth();
+        assert_eq!(caller, get_contract_owner(&e), "Caller is not the contract owner");
+        set_fee_percent(&e, &pct);
+    }
+}
 mod test;

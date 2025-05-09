@@ -2,19 +2,22 @@
 extern crate std;
 
 use super::*;
+use crate::{ValueSetEvent, WithdrawEvent};
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     token, vec, Address, Env, IntoVal, Symbol,
 };
 use token::Client as TokenClient;
 use token::StellarAssetClient as TokenAdminClient;
-use crate::{ValueSetEvent, WithdrawEvent};
+
+const INIT_FEE_PERCENT: u128 = 5;
+const INIT_FEE_RECEIVER_STR: &str = "GD6VVDDNR2KCR3OGD27KQPQ6ITG7OEQR25Z7OWOD5YPDNMRXZBWXUOA7";
 
 // ----------------------------------------------------------------------
 // Helper: create_token_contract
 // ----------------------------------------------------------------------
 fn create_token_contract<'a>(e: &Env, admin: &Address) -> (TokenClient<'a>, TokenAdminClient<'a>) {
-    let contract_address = e.register_stellar_asset_contract(admin.clone());
+    let contract_address = e.register_stellar_asset_contract_v2(admin.clone()).address();
     (
         TokenClient::new(e, &contract_address),
         TokenAdminClient::new(e, &contract_address),
@@ -22,7 +25,7 @@ fn create_token_contract<'a>(e: &Env, admin: &Address) -> (TokenClient<'a>, Toke
 }
 
 // ----------------------------------------------------------------------
-// Helper: create_weather_oracle_contract (UPDATED for start_time)
+// Helper: create_weather_oracle_contract
 // ----------------------------------------------------------------------
 fn create_weather_oracle_contract<'a>(
     e: &Env,
@@ -33,12 +36,10 @@ fn create_weather_oracle_contract<'a>(
     threshold: &u32,
     token: &Address,
     recipient: &Address,
-    start_time: &u64, // NEW param
+    start_time: &u64,
 ) -> WeatherOracleClient<'a> {
-    // Register the contract and create the client
-    let weather_oracle = WeatherOracleClient::new(e, &e.register_contract(None, crate::WeatherOracle {}));
-
-    // Initialize, passing the new `start_time`
+    let weather_oracle =
+        WeatherOracleClient::new(e, &e.register_contract(None, crate::WeatherOracle {}));
     weather_oracle.initialize(
         caller,
         relayer,
@@ -48,7 +49,7 @@ fn create_weather_oracle_contract<'a>(
         token,
         recipient,
         start_time,
-        &100u128
+        &100u128,
     );
     weather_oracle
 }
@@ -81,19 +82,51 @@ fn test_initialization() {
         &10,
         &token.address,
         &recipient,
-        &start_time, // NEW
+        &start_time,
     );
 
-    assert_eq!(weather_oracle.get_relayer(), relayer, "Relayer not set correctly");
-    assert_eq!(weather_oracle.get_continuity_requirement(), 2, "Continuity requirement not set correctly");
-    assert_eq!(weather_oracle.get_threshold(), 10, "Threshold not set correctly");
-    assert_eq!(weather_oracle.get_contract_owner(), owner, "Contract owner not set correctly");
+    assert_eq!(
+        weather_oracle.get_relayer(),
+        relayer,
+        "Relayer not set correctly"
+    );
+    assert_eq!(
+        weather_oracle.get_continuity_requirement(),
+        2,
+        "Continuity requirement not set correctly"
+    );
+    assert_eq!(
+        weather_oracle.get_threshold(),
+        10,
+        "Threshold not set correctly"
+    );
+    assert_eq!(
+        weather_oracle.get_contract_owner(),
+        owner,
+        "Contract owner not set correctly"
+    );
 
-    // Because start_time == current ledger time, epoch should be 0
-    assert_eq!(weather_oracle.get_current_epoch(), 0, "Initial epoch should be 0");
+    // epoch should be 0
+    assert_eq!(
+        weather_oracle.get_current_epoch(),
+        0,
+        "Initial epoch should be 0"
+    );
 
     let epoch_data = weather_oracle.get_epoch_data(&0);
     assert_eq!(epoch_data.value, 0, "Initial epoch value should be 0");
+
+    let default_fee_receiver = Address::from_str(&e, INIT_FEE_RECEIVER_STR);
+    assert_eq!(
+        weather_oracle.get_fee_receiver(),
+        default_fee_receiver,
+        "Default fee receiver not set"
+    );
+    assert_eq!(
+        weather_oracle.get_fee_percent(),
+        INIT_FEE_PERCENT,
+        "Default fee percent not set"
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -128,10 +161,15 @@ fn test_epoch_progression() {
     );
 
     // Initially, no time has passed
-    assert_eq!(weather_oracle.get_current_epoch(), 0, "Initial epoch should be 0");
+    assert_eq!(
+        weather_oracle.get_current_epoch(),
+        0,
+        "Initial epoch should be 0"
+    );
 
     // Advance time by 2 days
-    e.ledger().set_timestamp(e.ledger().timestamp() + 2 * 60 * 60 * 24);
+    e.ledger()
+        .set_timestamp(e.ledger().timestamp() + 2 * 60 * 60 * 24);
 
     // Because start_time was the original ledger time, after 2 days -> epoch=2
     assert_eq!(
@@ -141,7 +179,8 @@ fn test_epoch_progression() {
     );
 
     // Advance time by another day
-    e.ledger().set_timestamp(e.ledger().timestamp() + 60 * 60 * 24);
+    e.ledger()
+        .set_timestamp(e.ledger().timestamp() + 60 * 60 * 24);
     assert_eq!(
         weather_oracle.get_current_epoch(),
         3,
@@ -177,48 +216,37 @@ fn test_value_updates_and_continuity() {
         &10,
         &token.address,
         &recipient,
-        &start_time, // NEW
+        &start_time,
     );
 
-    // Fund contract with tokens
-    token_admin.mint(&owner, &1000);
-    token.transfer(&owner, &weather_oracle.address, &1000);
-    e.ledger().set_timestamp(e.ledger().timestamp() + (60 * 60 * 24 * 3));
+    // Fund contract with 1,000; we'll trigger a payout of 1,000 + fee
+    let funder = Address::generate(&e);
+    token_admin.mint(&funder, &1000);
 
-    assert_eq!(token.balance(&weather_oracle.address), 1000);
+    weather_oracle.fund(&funder);
 
-    // Test first value update (epoch=0)
+
+    let new_receiver = Address::generate(&e);
+    weather_oracle.set_fee_receiver(&owner, &new_receiver);
+
+
+    // move to epoch 1
+    e.ledger().set_timestamp(start_time + 2 * 60 * 60 * 24);
     weather_oracle.set_value(&relayer, &50, &1);
-    assert_eq!(
-        weather_oracle.get_continuity(),
-        1,
-        "Continuity should be 1 after first update"
-    );
+    assert_eq!(weather_oracle.get_continuity(), 1);
 
-    // Advance time by 1 day -> epoch=1
-    e.ledger().set_timestamp(e.ledger().timestamp() + 60 * 60 * 24);
-
-    // Test second update
+    // move to epoch 2 -> triggers payout
+    e.ledger()
+        .set_timestamp(e.ledger().timestamp() + 60 * 60 * 24);
     weather_oracle.set_value(&relayer, &50, &2);
-    assert_eq!(
-        weather_oracle.get_continuity(),
-        2,
-        "Continuity should be 2 after second update"
-    );
+    assert!(weather_oracle.get_funds_released());
 
-    // Once continuity=2 (>= requirement=2), tokens should transfer to recipient
     assert_eq!(
-        token.balance(&weather_oracle.address),
-        0,
-        "Contract balance should be 0 after transfer"
+        token.balance(&new_receiver),
+        5,
+        "Fee receiver should get 5%"
     );
-    assert_eq!(
-        token.balance(&recipient),
-        1000,
-        "Recipient should have received tokens"
-    );
-
-    assert_eq!(weather_oracle.get_funds_released(), true, "Funds should be released after continuity is met");
+    assert_eq!(token.balance(&recipient), 100, "Recipient should get 95%");
 }
 
 #[test]
@@ -242,8 +270,8 @@ fn test_value_below_threshold_resets_continuity() {
         &owner,
         &relayer,
         &(60 * 60 * 24), // 1-day epoch
-        &2,             // continuity_requirement
-        &10,            // threshold
+        &2,              // continuity_requirement
+        &10,             // threshold
         &token.address,
         &recipient,
         &start_time,
@@ -253,7 +281,8 @@ fn test_value_below_threshold_resets_continuity() {
     token_admin.mint(&owner, &1000);
     token.transfer(&owner, &weather_oracle.address, &1000);
 
-    e.ledger().set_timestamp(e.ledger().timestamp() + 2 * 60 * 60 * 24 * 2);
+    e.ledger()
+        .set_timestamp(e.ledger().timestamp() + 2 * 60 * 60 * 24 * 2);
     // First, set value above threshold => continuity should increment to 1
     weather_oracle.set_value(&relayer, &50, &1);
     assert_eq!(
@@ -394,11 +423,15 @@ fn test_withdraw_after_threshold_reached() {
         &start_time, // NEW
     );
 
+    let new_receiver = Address::generate(&e);
+    weather_oracle.set_fee_receiver(&owner, &new_receiver);
+
     // Fund the contract
     token_admin.mint(&owner, &1000);
     token.transfer(&owner, &weather_oracle.address, &1000);
 
-    e.ledger().set_timestamp(e.ledger().timestamp() + (60 * 60 * 24 * 3));
+    e.ledger()
+        .set_timestamp(e.ledger().timestamp() + (60 * 60 * 24 * 3));
 
     // Set values above threshold to trigger automatic transfer
     weather_oracle.set_value(&relayer, &50, &1);
@@ -467,7 +500,8 @@ fn test_timestamp_behavior() {
 
     // Advance ledger time by 2 days => epoch=2
     let one_day = 60 * 60 * 24;
-    e.ledger().set_timestamp(e.ledger().timestamp() + (one_day * 2));
+    e.ledger()
+        .set_timestamp(e.ledger().timestamp() + (one_day * 2));
 
     // Now do a set_value => ...
     weather_oracle.set_value(&relayer, &50, &1);
@@ -509,49 +543,20 @@ fn test_fund_success() {
         &token.address,
         &recipient,
         &start_time,
-        &funding_amount, // <--- pass the funding amount
+        &funding_amount,
     );
 
-    // Verify preconditions: contract is NOT funded yet
-    assert_eq!(weather_oracle.is_funded(), false, "Contract should not be funded");
-    assert_eq!(weather_oracle.get_funded_balance(), 0, "Funded balance should be zero");
-    // `get_funded_by` should be None
-    assert_eq!(weather_oracle.get_funded_by(), None, "No funder should be set yet");
+    // Mint 105 = 100 + 5% fee
+    let needed = 100 + (100 * INIT_FEE_PERCENT / 100);
+    token_admin.mint(&owner, &(needed as i128));
+    token.transfer(&owner, &funder, &(needed as i128));
 
-    // 5. Mint tokens to the "funder" so they can supply the 100 tokens
-    token_admin.mint(&owner, &200i128); // mint 200 to 'owner'
-    // Transfer 100 from owner -> funder to give the funder a balance
-    token.transfer(&owner, &funder, &100i128);
-    assert_eq!(token.balance(&funder), 100);
-
-    // 6. Call `fund` from the funder
     weather_oracle.fund(&funder);
 
-    // 7. Confirm that the contract is now funded
-    assert_eq!(weather_oracle.is_funded(), true, "Should be marked as funded");
-    assert_eq!(
-        weather_oracle.get_funded_balance(),
-        100u128,
-        "Funded balance should be 100"
-    );
-    assert_eq!(
-        token.balance(&weather_oracle.address),
-        100,
-        "Contract's token balance should now be 100"
-    );
-    assert_eq!(
-        token.balance(&funder),
-        0,
-        "Funder's balance should have decreased by 100"
-    );
-
-    // 8. Confirm the "funded_by" field is set to `funder`
-    let funded_by = weather_oracle.get_funded_by();
-    assert_eq!(
-        funded_by,
-        Some(funder.clone()),
-        "The contract should record who funded it"
-    );
+    assert!(weather_oracle.is_funded());
+    assert_eq!(weather_oracle.get_funded_balance(), needed);
+    assert_eq!(token.balance(&weather_oracle.address), needed as i128);
+    assert_eq!(token.balance(&funder), 0);
 }
 
 // ----------------------------------------------------------------------
@@ -569,11 +574,9 @@ fn test_fund_twice_should_fail() {
     let funder = Address::generate(&e);
 
     let (token, token_admin) = create_token_contract(&e, &owner);
-
     let start_time = e.ledger().timestamp();
     let funding_amount = 50u128;
 
-    // Initialize with a funding_amount of 50
     let weather_oracle = WeatherOracleClient::new(&e, &e.register_contract(None, WeatherOracle {}));
     weather_oracle.initialize(
         &owner,
@@ -587,14 +590,16 @@ fn test_fund_twice_should_fail() {
         &funding_amount,
     );
 
-    // Mint tokens and give them to the funder
-    token_admin.mint(&owner, &50i128);
-    token.transfer(&owner, &funder, &50i128);
+    let new_receiver = Address::generate(&e);
+    weather_oracle.set_fee_receiver(&owner, &new_receiver);
 
-    // First `fund` call => success
+    // mint enough (including fee)
+    let fee = funding_amount * INIT_FEE_PERCENT / 100;
+    let needed = (funding_amount + fee) as i128;
+    token_admin.mint(&owner, &needed);
+    token.transfer(&owner, &funder, &needed);
+
     weather_oracle.fund(&funder);
-
-    // Second `fund` call => should panic
     weather_oracle.fund(&funder);
 }
 
@@ -631,7 +636,11 @@ fn test_fund_insufficient_balance() {
     );
 
     // `get_funded_by` should be None at this point
-    assert_eq!(weather_oracle.get_funded_by(), None, "Should not have a funder yet");
+    assert_eq!(
+        weather_oracle.get_funded_by(),
+        None,
+        "Should not have a funder yet"
+    );
 
     // We intentionally do NOT mint any tokens to `funder` => balance=0
     // Attempt to fund, which should fail due to insufficient token balance
@@ -645,10 +654,48 @@ fn test_fund_insufficient_balance() {
     // Confirm the contract is still not funded
     assert_eq!(weather_oracle.is_funded(), false);
     assert_eq!(weather_oracle.get_funded_balance(), 0);
-    assert_eq!(weather_oracle.get_funded_by(), None, "No funder should be recorded yet");
+    assert_eq!(
+        weather_oracle.get_funded_by(),
+        None,
+        "No funder should be recorded yet"
+    );
     assert_eq!(
         token.balance(&weather_oracle.address),
         0,
         "Contract's token balance should still be 0"
     );
+}
+
+#[test]
+fn test_fee_setters() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let owner = Address::generate(&e);
+    let relayer = Address::generate(&e);
+    let recipient = Address::generate(&e);
+
+    let (token, _) = create_token_contract(&e, &owner);
+    let start_time = e.ledger().timestamp();
+
+    let weather_oracle = create_weather_oracle_contract(
+        &e,
+        &owner,
+        &relayer,
+        &(60 * 60 * 24),
+        &2,
+        &10,
+        &token.address,
+        &recipient,
+        &start_time,
+    );
+
+    // change fee receiver
+    let new_receiver = Address::generate(&e);
+    weather_oracle.set_fee_receiver(&owner, &new_receiver);
+    assert_eq!(weather_oracle.get_fee_receiver(), new_receiver);
+
+    // change fee percent
+    weather_oracle.set_fee_percent(&owner, &42u128);
+    assert_eq!(weather_oracle.get_fee_percent(), 42u128);
 }

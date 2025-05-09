@@ -15,9 +15,9 @@ pub enum StorageKey {
     IsContractPaused,
     UsdAddress,
     FundingAccount,
-    // batch keyed by batch_id
+    FeeReceiver,
+    FeePercent,
     Batches(u128),
-    // paid_addresses keyed by batch_id
     PaidAddresses(u128, Address),
 }
 
@@ -111,4 +111,28 @@ pub fn get_paid_addresses(e: &Env, batch_id: &u128, addresses: &Vec<Address>) ->
         paid_addresses.push_back(get_paid_address(e, &batch_id, &address));
     }
     paid_addresses
+}
+
+// FeeReceiver helpers
+pub fn set_fee_receiver(e: &Env, fee: &Address) {
+    e.storage().instance().set(&StorageKey::FeeReceiver, fee);
+}
+
+pub fn get_fee_receiver(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get::<_, Address>(&StorageKey::FeeReceiver)
+        .expect("FeeReceiver not set")
+}
+
+// FeePercent helpers
+pub fn set_fee_percent(e: &Env, pct: &u128) {
+    e.storage().instance().set(&StorageKey::FeePercent, pct);
+}
+
+pub fn get_fee_percent(e: &Env) -> u128 {
+    e.storage()
+        .instance()
+        .get::<_, u128>(&StorageKey::FeePercent)
+        .unwrap_or(0)
 }

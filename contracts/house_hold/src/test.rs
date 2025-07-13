@@ -38,7 +38,6 @@ fn create_house_hold_contract<'a>(
     house_hold.initialize(
         &admin.clone(),
         &usd_address.clone(),
-        &funding.clone(),
         &fee_receiver.clone(),
         &fee_percent,
     );
@@ -114,7 +113,6 @@ fn test_initialization_twice() {
     house_hold.initialize(
         &admin.clone(),
         &usd_address.clone(),
-        &funder_address.clone(),
         &fee_receiver.clone(),
         &fee_percent,
     );
@@ -279,7 +277,7 @@ fn test_batch_payment() {
     let addr1 = Address::generate(&e);
     let addr2 = Address::generate(&e);
     let addresses = vec![&e, addr1.clone(), addr2.clone()];
-    house_hold.pay_batch(&admin, &1, &addresses, &false);
+    house_hold.pay_batch(&admin, &1, &addresses, &false, &funding);
 
     // 2×100=200 + 5% of 200 =10 ⇒ starting 1000 – 210 = 790
     assert_eq!(token.balance(&funding), 790);
@@ -306,7 +304,7 @@ fn test_batch_payment_with_reduced_amount() {
     let addr1 = Address::generate(&e);
     let addr2 = Address::generate(&e);
     let addresses = vec![&e, addr1.clone(), addr2.clone()];
-    house_hold.pay_batch(&admin, &1, &addresses, &true);
+    house_hold.pay_batch(&admin, &1, &addresses, &true, &funding);
 
     // 2×50=100 + 5% of 100=5 ⇒ 1000 – 105 = 895
     assert_eq!(token.balance(&funding), 895);
@@ -327,7 +325,7 @@ fn test_unauthorized_batch_payment() {
     let unauthorized = Address::generate(&e);
     let batch_id = 1;
     let addresses = vec![&e];
-    house_hold.pay_batch(&unauthorized, &batch_id, &addresses, &false);
+    house_hold.pay_batch(&unauthorized, &batch_id, &addresses, &false, &funder_address);
 }
 
 // ----------------------------------------------------------------------
@@ -341,7 +339,7 @@ fn test_batch_payment_not_existing() {
 
     let batch_id = 1;
     let addresses = vec![&e];
-    house_hold.pay_batch(&admin, &batch_id, &addresses, &false);
+    house_hold.pay_batch(&admin, &batch_id, &addresses, &false, &funder_address);
 }
 
 // ----------------------------------------------------------------------
@@ -353,7 +351,7 @@ fn test_contract_paused_batch_payment() {
     let e = Env::default();
     let (admin, usd_address, funder_address, fee_receiver, house_hold, _, _) = initialize_house_hold_contract(&e);
     house_hold.set_is_contract_paused(&admin, &true);
-    house_hold.pay_batch(&admin, &1, &vec![&e], &false);
+    house_hold.pay_batch(&admin, &1, &vec![&e], &false, &funder_address);
 }
 
 // ----------------------------------------------------------------------

@@ -19,7 +19,6 @@ impl HouseHold {
         e: Env,
         admin: Address,
         usd_address: Address,
-        funding_account: Address,
         fee_receiver: Address,
         fee_percent: u128,
     ) {
@@ -28,7 +27,6 @@ impl HouseHold {
         set_initialized(&e, &true);
         set_admin(&e, &admin);
         set_usd_address(&e, &usd_address);
-        set_funding_account(&e, &funding_account);
         set_fee_receiver(&e, &fee_receiver);
         set_fee_percent(&e, &fee_percent);
     }
@@ -79,6 +77,7 @@ impl HouseHold {
         batch_id: u128,
         addresses: Vec<Address>,
         use_reduced: bool,
+        funding_account: Address
     ) {
         Self::check_auth(&e, &admin);
         assert!(!get_is_contract_paused(&e), "Contract is paused");
@@ -94,7 +93,6 @@ impl HouseHold {
 
         let usd_address = get_usd_address(&e);
         let token_client: token::Client = token::Client::new(&e, &usd_address);
-        let funding_account = get_funding_account(&e);
         let contract_address = e.current_contract_address();
 
         // calculate fee
@@ -148,11 +146,6 @@ impl HouseHold {
         };
         e.events()
             .publish((COALA_HOUSE_HOLD, "fund_recovered"), event);
-    }
-
-    pub fn set_funding_account(e: Env, admin: Address, funding_account: Address) {
-        Self::check_auth(&e, &admin);
-        set_funding_account(&e, &funding_account);
     }
     
     // -----------------

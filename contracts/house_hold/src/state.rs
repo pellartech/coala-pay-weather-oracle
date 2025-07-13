@@ -41,18 +41,6 @@ pub fn get_admin(e: &Env) -> Address {
         .expect("Admin not set")
 }
 
-pub fn set_funding_account(e: &Env, funding: &Address) {
-    e.storage()
-        .instance()
-        .set(&StorageKey::FundingAccount, funding);
-}
-
-pub fn get_funding_account(e: &Env) -> Address {
-    e.storage()
-        .instance()
-        .get::<_, Address>(&StorageKey::FundingAccount)
-        .expect("FundingAccount not set")
-}
     
 pub fn set_is_contract_paused(e: &Env, is_paused: &bool) {
     e.storage()

@@ -28,7 +28,6 @@ fn create_token_contract<'a>(e: &Env, admin: &Address) -> (TokenClient<'a>, Toke
 fn create_house_hold_v2_contract<'a>(
     e: &Env,
     admin: &Address,
-    funding: &Address,
     fee_receiver: &Address,
     fee_percent: &u128,
 ) -> HouseHoldV2Client<'a> {
@@ -36,7 +35,6 @@ fn create_house_hold_v2_contract<'a>(
     let house_hold = HouseHoldV2Client::new(e, &contract_id);
     house_hold.initialize(
         &admin.clone(),
-        &funding.clone(),
         &fee_receiver.clone(),
         &fee_percent,
     );
@@ -66,7 +64,6 @@ fn initialize_house_hold_v2_contract<'a>(
     let house_hold = create_house_hold_v2_contract(
         &e,
         &admin,
-        &funding,
         &fee_receiver,
         &fee_percent,
     );
@@ -106,7 +103,6 @@ fn test_initialization_twice() {
     let (admin, funding, fee_receiver, house_hold, _, _) = initialize_house_hold_v2_contract(&e);
     house_hold.initialize(
         &admin.clone(),
-        &funding.clone(),
         &fee_receiver.clone(),
         &fee_percent,
     );
@@ -247,7 +243,7 @@ fn test_batch_payment() {
     let addr1 = Address::generate(&e);
     let addr2 = Address::generate(&e);
     let addresses = vec![&e, addr1.clone(), addr2.clone()];
-    house_hold.pay_batch(&admin, &1, &addresses, &false);
+    house_hold.pay_batch(&admin, &1, &addresses, &false, &funding);
 
     // 2×100=200 + 5% of 200 =10 ⇒ starting 1000 – 210 = 790
     assert_eq!(token.balance(&funding), 790);
@@ -275,7 +271,7 @@ fn test_batch_payment_with_reduced_amount() {
     let addr1 = Address::generate(&e);
     let addr2 = Address::generate(&e);
     let addresses = vec![&e, addr1.clone(), addr2.clone()];
-    house_hold.pay_batch(&admin, &1, &addresses, &true);
+    house_hold.pay_batch(&admin, &1, &addresses, &true, &funding);
 
     // 2×50=100 + 5% of 100=5 ⇒ 1000 – 105 = 895
     assert_eq!(token.balance(&funding), 895);
@@ -296,7 +292,7 @@ fn test_unauthorized_batch_payment() {
     let unauthorized = Address::generate(&e);
     let batch_id = 1;
     let addresses = vec![&e];
-    house_hold.pay_batch(&unauthorized, &batch_id, &addresses, &false);
+    house_hold.pay_batch(&unauthorized, &batch_id, &addresses, &false, &_funding);
 }
 
 // ----------------------------------------------------------------------
@@ -310,7 +306,7 @@ fn test_batch_payment_not_existing() {
 
     let batch_id = 1;
     let addresses = vec![&e];
-    house_hold.pay_batch(&admin, &batch_id, &addresses, &false);
+    house_hold.pay_batch(&admin, &batch_id, &addresses, &false, &_funding);
 }
 
 // ----------------------------------------------------------------------
@@ -322,7 +318,7 @@ fn test_contract_paused_batch_payment() {
     let e = Env::default();
     let (admin, _funding, _fee_receiver, house_hold, _, _) = initialize_house_hold_v2_contract(&e);
     house_hold.set_is_contract_paused(&admin, &true);
-    house_hold.pay_batch(&admin, &1, &vec![&e], &false);
+    house_hold.pay_batch(&admin, &1, &vec![&e], &false, &_funding);
 }
 
 // ----------------------------------------------------------------------
@@ -440,12 +436,12 @@ fn test_multiple_tokens_different_batches() {
     // Pay batch1 with token1
     let addr1 = Address::generate(&e);
     let addresses1 = vec![&e, addr1.clone()];
-    house_hold.pay_batch(&admin, &1, &addresses1, &false);
+    house_hold.pay_batch(&admin, &1, &addresses1, &false, &funding);
 
     // Pay batch2 with token2
     let addr2 = Address::generate(&e);
     let addresses2 = vec![&e, addr2.clone()];
-    house_hold.pay_batch(&admin, &2, &addresses2, &false);
+    house_hold.pay_batch(&admin, &2, &addresses2, &false, &funding);
 
     // Verify balances
     // token1: 1×100=100 + 5% fee=5, total=105, remaining=2000 - 105 = 1895
@@ -494,8 +490,8 @@ fn test_same_token_multiple_batches() {
     let addr1 = Address::generate(&e);
     let addr2 = Address::generate(&e);
     
-    house_hold.pay_batch(&admin, &1, &vec![&e, addr1.clone()], &false);
-    house_hold.pay_batch(&admin, &2, &vec![&e, addr2.clone()], &false);
+    house_hold.pay_batch(&admin, &1, &vec![&e, addr1.clone()], &false, &funding);
+    house_hold.pay_batch(&admin, &2, &vec![&e, addr2.clone()], &false, &funding);
 
     // Verify balances
     // batch1: 1×100=100 + 5% fee=5, total=105
@@ -561,7 +557,7 @@ fn test_get_paid_addresses() {
     let addresses = vec![&e, addr1.clone(), addr2.clone()]; // 2 addresses
 
     // Pay only first address
-    house_hold.pay_batch(&admin, &1, &vec![&e, addr1.clone()], &false);
+    house_hold.pay_batch(&admin, &1, &vec![&e, addr1.clone()], &false, &_funding);
 
     // Check paid status
     let paid_statuses = house_hold.get_paid_addresses(&1, &addresses);
@@ -570,31 +566,4 @@ fn test_get_paid_addresses() {
     assert_eq!(paid_statuses.get(1), Some(false));  // addr2 (not paid)
 }
 
-// ----------------------------------------------------------------------
-// Test: Set Funding Account
-// ----------------------------------------------------------------------
-#[test]
-fn test_set_funding_account() {
-    let e = Env::default();
-    let (admin, _funding, _fee_receiver, house_hold, _, _) = initialize_house_hold_v2_contract(&e);
-
-    let new_funding = Address::generate(&e);
-    house_hold.set_funding_account(&admin, &new_funding);
-
-    // Note: There's no getter for funding account in the contract, 
-    // but we can verify the function doesn't panic
-}
-
-// ----------------------------------------------------------------------
-// Test: Unauthorized Set Funding Account (should panic)
-// ----------------------------------------------------------------------
-#[test]
-#[should_panic(expected = "Caller is not the admin")]
-fn test_unauthorized_set_funding_account() {
-    let e = Env::default();
-    let (_admin, _funding, _fee_receiver, house_hold, _, _) = initialize_house_hold_v2_contract(&e);
-
-    let unauthorized = Address::generate(&e);
-    let new_funding = Address::generate(&e);
-    house_hold.set_funding_account(&unauthorized, &new_funding);
-} 
+ 

@@ -47,25 +47,17 @@ impl HouseHoldV2 {
         e: Env, 
         admin: Address, 
         batch_id: u128, 
-        token_address: Address,
         batch_data: Batch
     ) {
         Self::check_auth(&e, &admin);
         assert!(!get_is_contract_paused(&e), "Contract is paused");
         assert!(get_batch(&e, &batch_id).is_none(), "Batch already exists");
 
-        // Create batch with token address
-        let batch_with_token = Batch {
-            token_address: token_address.clone(),
-            amount_per_beneficiary: batch_data.amount_per_beneficiary,
-            reduced_amount_per_beneficiary: batch_data.reduced_amount_per_beneficiary,
-        };
-
-        set_batch(&e, &batch_id, &batch_with_token);
+        set_batch(&e, &batch_id, &batch_data);
 
         let event = BatchCreatedEvent {
             batch_id,
-            token_address,
+            token_address: batch_data.token_address.clone(),
             amount_per_beneficiary: batch_data.amount_per_beneficiary,
             reduced_amount_per_beneficiary: batch_data.reduced_amount_per_beneficiary,
         };

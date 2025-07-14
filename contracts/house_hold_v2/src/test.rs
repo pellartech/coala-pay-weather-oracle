@@ -160,7 +160,7 @@ fn test_batch_creation() {
         reduced_amount_per_beneficiary: 50,
     };
 
-    house_hold.create_batch(&admin, &100, &token.address, &batch_data);
+    house_hold.create_batch(&admin, &100, &batch_data);
 
     let created_batch = house_hold.get_batch(&100).unwrap();
     assert_eq!(
@@ -182,7 +182,7 @@ fn test_batch_creation() {
     );
 
     // Test that creating the same batch ID fails
-    let res = house_hold.try_create_batch(&admin, &100, &token.address, &batch_data);
+    let res = house_hold.try_create_batch(&admin, &100, &batch_data);
     assert!(res.is_err(), "Batch already exists");
 }
 
@@ -205,7 +205,7 @@ fn test_unauthorized_batch_creation() {
         reduced_amount_per_beneficiary: 50,
     };
 
-    house_hold.create_batch(&unauthorized, &100, &token.address, &batch_data);
+    house_hold.create_batch(&unauthorized, &100, &batch_data);
 }
 
 // ----------------------------------------------------------------------
@@ -217,7 +217,7 @@ fn test_contract_paused_batch_creation() {
     let e = Env::default();
     let (admin, _funding, _fee_receiver, house_hold, token, _) = initialize_house_hold_v2_contract(&e);
     house_hold.set_is_contract_paused(&admin, &true);
-    house_hold.create_batch(&admin, &100, &token.address, &Batch {
+    house_hold.create_batch(&admin, &100, &Batch {
         token_address: token.address.clone(),
         amount_per_beneficiary: 100,
         reduced_amount_per_beneficiary: 50,
@@ -238,7 +238,7 @@ fn test_batch_payment() {
         amount_per_beneficiary: 100,
         reduced_amount_per_beneficiary: 50,
     };
-    house_hold.create_batch(&admin, &1, &token.address, &batch_data);
+    house_hold.create_batch(&admin, &1, &batch_data);
 
     let addr1 = Address::generate(&e);
     let addr2 = Address::generate(&e);
@@ -266,7 +266,7 @@ fn test_batch_payment_with_reduced_amount() {
         amount_per_beneficiary: 100,
         reduced_amount_per_beneficiary: 50,
     };
-    house_hold.create_batch(&admin, &1, &token.address, &batch_data);
+    house_hold.create_batch(&admin, &1, &batch_data);
 
     let addr1 = Address::generate(&e);
     let addr2 = Address::generate(&e);
@@ -415,7 +415,7 @@ fn test_multiple_tokens_different_batches() {
         amount_per_beneficiary: 100,
         reduced_amount_per_beneficiary: 50,
     };
-    house_hold.create_batch(&admin, &1, &token1.address, &batch_data_1);
+    house_hold.create_batch(&admin, &1, &batch_data_1);
 
     // Create batch with token2
     let batch_data_2 = Batch {
@@ -423,7 +423,7 @@ fn test_multiple_tokens_different_batches() {
         amount_per_beneficiary: 200,
         reduced_amount_per_beneficiary: 100,
     };
-    house_hold.create_batch(&admin, &2, &token2.address, &batch_data_2);
+    house_hold.create_batch(&admin, &2, &batch_data_2);
 
     // Verify batches have different tokens
     let batch1 = house_hold.get_batch(&1).unwrap();
@@ -470,14 +470,14 @@ fn test_same_token_multiple_batches() {
         amount_per_beneficiary: 100,
         reduced_amount_per_beneficiary: 50,
     };
-    house_hold.create_batch(&admin, &1, &token.address, &batch_data_1);
+    house_hold.create_batch(&admin, &1, &batch_data_1);
 
     let batch_data_2 = Batch {
         token_address: token.address.clone(),
         amount_per_beneficiary: 150,
         reduced_amount_per_beneficiary: 75,
     };
-    house_hold.create_batch(&admin, &2, &token.address, &batch_data_2);
+    house_hold.create_batch(&admin, &2, &batch_data_2);
 
     // Verify both batches use the same token
     let batch1 = house_hold.get_batch(&1).unwrap();
@@ -520,14 +520,14 @@ fn test_batch_creation_different_tokens() {
     };
 
     // Create batches with different tokens
-    house_hold.create_batch(&admin, &1, &token1.address, &batch_data);
+    house_hold.create_batch(&admin, &1, &batch_data);
     
     let batch_data_2 = Batch {
         token_address: token2.address.clone(),
         amount_per_beneficiary: 100,
         reduced_amount_per_beneficiary: 50,
     };
-    house_hold.create_batch(&admin, &2, &token2.address, &batch_data_2);
+    house_hold.create_batch(&admin, &2, &batch_data_2);
 
     let batch1 = house_hold.get_batch(&1).unwrap();
     let batch2 = house_hold.get_batch(&2).unwrap();
@@ -550,7 +550,7 @@ fn test_get_paid_addresses() {
         amount_per_beneficiary: 100,
         reduced_amount_per_beneficiary: 50,
     };
-    house_hold.create_batch(&admin, &1, &token.address, &batch_data);
+    house_hold.create_batch(&admin, &1, &batch_data);
 
     let addr1 = Address::generate(&e);
     let addr2 = Address::generate(&e);

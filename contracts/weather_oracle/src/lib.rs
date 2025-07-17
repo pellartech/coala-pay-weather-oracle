@@ -15,14 +15,6 @@ fn get_init_fee_receiver(env: &Env) -> Address {
 // Define Events
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
-pub struct WithdrawEvent {
-    pub caller: Address,
-    pub amount: u128,
-    pub recipient: Address,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[contracttype]
 pub struct ValueSetEvent {
     pub relayer: Address,
     pub epoch: u32,
@@ -32,9 +24,10 @@ pub struct ValueSetEvent {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
-pub struct FundEvent {
+pub struct FunderChangedEvent {
     pub caller: Address,
-    pub amount: u128,
+    pub old_funder: Address,
+    pub new_funder: Address,
 }
 
 #[derive(Clone, Debug)]
@@ -58,10 +51,8 @@ pub enum DataKey {
     Token,
     Recipient,
     StartTime,
-    FundedBalance,
     FundingAmount,
-    IsFunded,
-    FundedBy,
+    Funder,
     FundsReleased,
     FeeReceiver,
     FeePercent,
@@ -171,19 +162,6 @@ fn get_start_time(e: &Env) -> u64 {
         .expect("Contract not initialized")
 }
 
-fn get_funded_balance(e: &Env) -> u128 {
-    e.storage()
-        .instance()
-        .get::<_, u128>(&DataKey::FundedBalance)
-        .unwrap_or(0)
-}
-
-fn set_funded_balance(e: &Env, amount: u128) {
-    e.storage()
-        .instance()
-        .set(&DataKey::FundedBalance, &amount);
-}
-
 fn get_funding_amount(e: &Env) -> u128 {
     e.storage()
         .instance()
@@ -191,22 +169,15 @@ fn get_funding_amount(e: &Env) -> u128 {
         .expect("Contract not initialized")
 }
 
-fn is_funded(e: &Env) -> bool {
+fn get_funder(e: &Env) -> Address {
     e.storage()
         .instance()
-        .get::<_, bool>(&DataKey::IsFunded)
-        .unwrap_or(false)
+        .get::<_, Address>(&DataKey::Funder)
+        .expect("Contract not initialized")
 }
 
-fn set_is_funded(e: &Env, funded: bool) {
-    e.storage().instance().set(&DataKey::IsFunded, &funded);
-}
-
-fn set_funded_by(e: &Env, caller: &Address) {
-    e.storage().instance().set(&DataKey::FundedBy, caller);
-}
-fn get_funded_by(e: &Env) -> Option<Address> {
-    e.storage().instance().get::<_, Address>(&DataKey::FundedBy)
+fn set_funder(e: &Env, funder: &Address) {
+    e.storage().instance().set(&DataKey::Funder, funder);
 }
 
 fn get_current_epoch(e: &Env) -> u32 {
@@ -247,6 +218,7 @@ impl WeatherOracle {
         recipient: Address,
         start_time: u64,
         funding_amount: u128,
+        funder: Address,
     ) {
         assert!(
             !e.storage().instance().has(&DataKey::Initialized),
@@ -270,6 +242,9 @@ impl WeatherOracle {
         e.storage().instance().set(&DataKey::FeePercent, &INIT_FEE_PERCENT);
         e.storage().instance().set(&DataKey::Continuity, &0u32);
         e.storage().instance().set(&DataKey::StartTime, &start_time);
+        e.storage().instance().set(&DataKey::FundingAmount, &funding_amount);
+        e.storage().instance().set(&DataKey::Funder, &funder);
+        e.storage().instance().set(&DataKey::FundsReleased, &false);
 
         // Initialize epoch data for the current epoch
         let initial_value: u32 = 0;
@@ -280,10 +255,6 @@ impl WeatherOracle {
         e.storage()
             .instance()
             .set(&DataKey::LatestUpdate, &initial_value);
-
-        e.storage().instance().set(&DataKey::FundingAmount, &funding_amount);
-        e.storage().instance().set(&DataKey::IsFunded, &false);
-        e.storage().instance().set(&DataKey::FundedBalance, &0u128);
     }
 
     pub fn set_value(e: Env, caller: Address, value: u32, epoch: u32) {
@@ -322,14 +293,14 @@ impl WeatherOracle {
             set_continuity(&e, continuity + 1);
 
             if continuity + 1 >= continuity_requirement {
-                let contract_address = e.current_contract_address();
+                // Transfer directly from funder to recipients
+                let funder = get_funder(&e);
                 let token = e
                     .storage()
                     .instance()
                     .get::<_, Address>(&DataKey::Token)
                     .expect("Contract not initialized");
                 let token_client: token::Client = token::Client::new(&e, &token);
-                let balance = token_client.balance(&contract_address);
 
                 let fee_receiver = get_fee_receiver(&e);
                 let fee_pct = get_fee_percent(&e);
@@ -340,12 +311,11 @@ impl WeatherOracle {
                     .instance()
                     .get::<_, Address>(&DataKey::Recipient)
                     .expect("Contract not initialized");
-                let recipient_amount = balance
-                    .checked_sub(fee_amount.try_into().unwrap())
-                    .expect("Underflow on payout split");
 
-                token_client.transfer(&contract_address, &fee_receiver, &(fee_amount as i128));
-                token_client.transfer(&contract_address, &recipient, &(recipient_amount as i128));
+                // Transfer directly from funder to recipients using transfer_from
+                let contract_address = e.current_contract_address();
+                token_client.transfer_from(&contract_address, &funder, &fee_receiver, &(fee_amount as i128));
+                token_client.transfer_from(&contract_address, &funder, &recipient, &(funding_amount as i128));
 
                 set_funds_released(&e, true);
             }
@@ -364,72 +334,6 @@ impl WeatherOracle {
             .publish((COALA, symbol_short!("value_set")), value_event);
     }
 
-    pub fn withdraw(e: Env, caller: Address, amount: u128, recipient: Address) {
-        caller.require_auth();
-        assert_eq!(
-            caller,
-            Self::get_contract_owner(e.clone()),
-            "Caller is not the contract owner"
-        );
-
-        let token = e
-            .storage()
-            .instance()
-            .get::<_, Address>(&DataKey::Token)
-            .expect("Contract not initialized");
-        let token_client: token::Client = token::Client::new(&e, &token);
-        let contract_address = e.current_contract_address();
-        let balance = token_client.balance(&contract_address);
-
-        assert!(balance as u128 >= amount, "Insufficient balance");
-
-        token_client.transfer(&contract_address, &recipient, &(amount as i128));
-
-        // Emit Withdraw Event
-        let withdraw_event = WithdrawEvent {
-            caller: caller.clone(),
-            amount,
-            recipient: recipient.clone(),
-        };
-        e.events()
-            .publish((COALA, symbol_short!("withdraw")), withdraw_event);
-    }
-
-    pub fn fund(e: Env, caller: Address) {
-        caller.require_auth();
-        if is_funded(&e) {
-            panic!("Contract has already been funded");
-        }
-
-        let funding_amount = get_funding_amount(&e);
-        let fee_pct = get_fee_percent(&e);
-        let fee_amount = funding_amount * fee_pct / 100;
-        let total = funding_amount
-            .checked_add(fee_amount)
-            .expect("Overflow calculating total funding");
-
-        let contract_address = e.current_contract_address();
-        let token = e
-            .storage()
-            .instance()
-            .get::<_, Address>(&DataKey::Token)
-            .expect("Contract not initialized");
-        let token_client: token::Client = token::Client::new(&e, &token);
-
-        token_client.transfer(&caller, &contract_address, &(total as i128));
-
-        // Mark as funded and set the funded_balance
-        set_is_funded(&e, true);
-        set_funded_balance(&e, total);
-        set_funded_by(&e, &caller);
-
-        let fund_event = FundEvent {
-            caller: caller.clone(),
-            amount: funding_amount,
-        };
-        e.events().publish((COALA, symbol_short!("fund")), fund_event);
-    }
-
     // -----------------
     // Getter methods
     // -----------------
@@ -445,12 +349,15 @@ impl WeatherOracle {
     pub fn get_relayer(e: Env) -> Address {
         get_relayer(&e)
     }
+
     pub fn get_fee_receiver(e: Env) -> Address {
         get_fee_receiver(&e)
     }
+
     pub fn get_fee_percent(e: Env) -> u128 {
         get_fee_percent(&e)
     }
+
     pub fn get_continuity_requirement(e: Env) -> u32 {
         get_continuity_requirement(&e)
     }
@@ -479,22 +386,21 @@ impl WeatherOracle {
         get_start_time(&e)
     }
 
-    pub fn get_funded_balance(e: Env) -> u128 {
-        get_funded_balance(&e)
-    }
-
     pub fn get_funding_amount(e: Env) -> u128 {
         get_funding_amount(&e)
     }
 
-    pub fn is_funded(e: Env) -> bool {
-        is_funded(&e)
+    pub fn get_funder(e: Env) -> Address {
+        get_funder(&e)
     }
 
-    pub fn get_funded_by(e: Env) -> Option<Address> {
-        get_funded_by(&e)
+    pub fn get_funds_released(e: Env) -> bool {
+        get_funds_released(&e)
     }
 
+    // -----------------
+    // Setter methods
+    // -----------------
     pub fn set_continuity_requirement(e: Env, caller: Address, continuity_requirement: u32) {
         caller.require_auth();
         assert_eq!(
@@ -515,10 +421,6 @@ impl WeatherOracle {
         set_threshold(&e, threshold);
     }
 
-    pub fn get_funds_released(e: Env) -> bool {
-        get_funds_released(&e)
-    }
-
     pub fn set_fee_receiver(e: Env, caller: Address, new_fee: Address) {
         caller.require_auth();
         assert_eq!(caller, get_contract_owner(&e), "Caller is not the contract owner");
@@ -529,6 +431,23 @@ impl WeatherOracle {
         caller.require_auth();
         assert_eq!(caller, get_contract_owner(&e), "Caller is not the contract owner");
         set_fee_percent(&e, &pct);
+    }
+
+    pub fn set_funder(e: Env, caller: Address, new_funder: Address) {
+        caller.require_auth();
+        assert_eq!(caller, get_contract_owner(&e), "Caller is not the contract owner");
+        
+        let old_funder = get_funder(&e);
+        set_funder(&e, &new_funder);
+        
+        // Emit Funder Changed Event
+        let funder_changed_event = FunderChangedEvent {
+            caller: caller.clone(),
+            old_funder,
+            new_funder,
+        };
+        e.events()
+            .publish((COALA, symbol_short!("fund_chg")), funder_changed_event);
     }
 }
 mod test;

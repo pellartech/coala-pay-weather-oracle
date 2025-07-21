@@ -10,7 +10,7 @@ use token::Client as TokenClient;
 use token::StellarAssetClient as TokenAdminClient;
 
 const INIT_FEE_PERCENT: u128 = 5;
-const INIT_FEE_RECEIVER_STR: &str = "GD6VVDDNR2KCR3OGD27KQPQ6ITG7OEQR25Z7OWOD5YPDNMRXZBWXUOA7";
+const INIT_FEE_RECEIVER_STR: &str = "GDHUXXPDBB7VAOAZKGSXJ7SOLTA4TS5R5L74IQX3AIESSLFJL5TGMWIH";
 
 // ----------------------------------------------------------------------
 // Helper: create_token_contract

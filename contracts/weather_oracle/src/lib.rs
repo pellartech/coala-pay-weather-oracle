@@ -97,7 +97,7 @@ fn set_fee_percent(e: &Env, pct: &u128) {
 
 fn get_epoch_data(e: &Env, epoch: u32) -> EpochData {
     e.storage()
-        .instance()
+        .persistent()
         .get::<_, EpochData>(&DataKey::EpochData(epoch))
         .expect("Epoch data not found")
 }
@@ -250,7 +250,7 @@ impl WeatherOracle {
         let initial_value: u32 = 0;
         let epoch_data = EpochData { value: initial_value };
         e.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::EpochData(initial_value), &epoch_data);
         e.storage()
             .instance()
@@ -281,7 +281,7 @@ impl WeatherOracle {
 
         let epoch_data = EpochData { value };
         e.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::EpochData(epoch), &epoch_data);
         e.storage().instance().set(&DataKey::LatestUpdate, &epoch);
 

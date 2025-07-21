@@ -9,7 +9,7 @@ use soroban_sdk::{
 const COALA: Symbol = symbol_short!("COALA");
 const INIT_FEE_PERCENT: u128 = 5;
 fn get_init_fee_receiver(env: &Env) -> Address {
-    Address::from_str(env, "GD6VVDDNR2KCR3OGD27KQPQ6ITG7OEQR25Z7OWOD5YPDNMRXZBWXUOA7")
+    Address::from_str(env, "GDHUXXPDBB7VAOAZKGSXJ7SOLTA4TS5R5L74IQX3AIESSLFJL5TGMWIH")
 }
 
 // Define Events
